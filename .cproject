@@ -124,6 +124,6 @@
         </cconfiguration>
     </storageModule>
     <storageModule moduleId="cdtBuildSystem" version="4.0.0">
-        <project id="2024H.com.ti.ccstudio.buildDefinitions.TMS470.ProjectType.1794345696" name="TMS470" projectType="com.ti.ccstudio.buildDefinitions.TMS470.ProjectType"/>
+        <project id="ti_cup.com.ti.ccstudio.buildDefinitions.TMS470.ProjectType.1794345696" name="TMS470" projectType="com.ti.ccstudio.buildDefinitions.TMS470.ProjectType"/>
     </storageModule>
 </cproject>
