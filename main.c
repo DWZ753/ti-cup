@@ -1,152 +1,251 @@
-/**
- * @file    main.c
- * @brief   TM1637 四位数码管综合测试（自动循环）
- *
- * 测试项：
- *   1. 数字 0→9999（前导零）
- *   2. 数字 0→9999（前导消隐）
- *   3. 负数 -1 / -12 / -123 / -999
- *   4. 时间格式 MM:SS（冒号闪烁）
- *   5. 亮度 0→7 循环（显示 8888）
- *   6. 段测试（逐位点亮全部段）
- */
-
-#include "ti_msp_dl_config.h"
 #include "board.h"
-#include "tm1637.h"
+#include "state_machine.h"
+#include "pid.h"
+#include "angle.h"
+#include "tracking.h"
 
-/* 每阶段 5 秒，每步 200ms */
-#define PHASE_DURATION_MS   5000
-#define STEP_INTERVAL_MS     200
+/* ========== 控制周期（ms） ========== */
+#define IMU_UPDATE_DT_MS      10
+#define ANGLE_PID_DT_MS       80
 
-typedef enum {
-	TEST_NUM_LEADING_ZERO,
-	TEST_NUM_NO_ZERO,
-	TEST_NEGATIVE,
-	TEST_TIME,
-	TEST_BRIGHTNESS,
-	TEST_SEGMENTS,
-	TEST_COUNT
-} TestPhase;
+/* ========== 丢线防抖 ========== */
+#define LINE_LOST_DEBOUNCE     5
+
+/* ========== 固定速度（开环） ========== */
+#define SPEED_ARC          1000.0f
+#define SPEED_STRAIGHT     1000.0f
+#define ARC_DIFF_GAIN        7.3f   // 差速增益：servo × gain = 两轮速度差 (mm/s)
+
+/* ========== 循迹 PID 参数 ========== */
+// position ∈ [-1, 1]，OUT_LIMIT=40 对应满偏 40%
+// KP=40 → 最边缘传感器单独压线时输出 ±40
+#define TRACKING_KP         100.0f
+#define TRACKING_KI          0.5f
+#define TRACKING_KD          0.0f   // 用 slew rate 替代 D 项
+#define TRACKING_INT_LIMIT  20.0f
+#define TRACKING_OUT_LIMIT  100.0f
+#define TRACKING_SLEW_MAX     4     // 每次调用最大变化量
 
 int main(void)
 {
-	TestPhase phase       = 0;
-	uint32_t  phase_start;
-	uint32_t  step_last;
-	uint16_t  counter     = 0;
-	uint8_t   sec         = 0;
-	uint8_t   brightness  = 7;
-	int8_t    bright_dir  = 1;
-	uint8_t   seg_pos     = 0;
-	bool      colon_state = true;
+    SYSCFG_DL_init();
+    Board_Init();
+    StateMachine_Init();
 
-	SYSCFG_DL_init();
-	Board_Init();
+    /* ---- 循迹 PID（弧线段使用） ---- */
+    PID_Controller tracking_pid;
+    PID_Init(&tracking_pid,
+             TRACKING_KP, TRACKING_KI, TRACKING_KD,
+             TRACKING_INT_LIMIT, TRACKING_OUT_LIMIT);
+    PID_SetTarget(&tracking_pid, 0.0f);
+    int32_t tracking_last_servo = 0;   // slew rate 历史
 
-	TM1637_Init();
-	TM1637_DisplayNum(0, true);
+    /* ---- 角度 PID（直线段使用） ---- */
+    Angle_Init();
 
-	phase_start = Board_GetTickMs();
-	step_last   = phase_start;
+    /* ---- 时序变量 ---- */
+    uint32_t last_imu        = 0;
+    uint32_t last_angle_pid  = 0;
+    uint32_t last_tracking   = 0;
+    uint32_t last_output     = 0;
 
-	while (1)
-	{
-		uint32_t now = Board_GetTickMs();
+    /* ---- 状态机变化跟踪 ---- */
+    QuestionState_t last_state = STATE_IDLE;
+    SegmentType_t   last_seg  = SEG_STOP;   // 用于检测段切换
 
-		/* ---- 阶段切换 ---- */
-		if (now - phase_start >= PHASE_DURATION_MS)
-		{
-			phase_start = now;
-			step_last   = now;
-			counter     = 0;
-			sec         = 0;
-			brightness  = 7;
-			bright_dir  = 1;
-			seg_pos     = 0;
+    /* ---- 丢线防抖计数器 ---- */
+    uint8_t lost_debounce = 0;
 
-			phase++;
-			if (phase >= TEST_COUNT) phase = 0;
+    uint8_t buf[16];
 
-			TM1637_Clear();
-		}
+    while (1)
+    {
+        uint32_t now = Board_GetTickMs();
 
-		/* ---- 步进控制 ---- */
-		if (now - step_last < STEP_INTERVAL_MS) continue;
-		step_last = now;
+        /* ======== IMU 姿态更新 ======== */
+        if (now - last_imu >= IMU_UPDATE_DT_MS)
+        {
+            last_imu = now;
+            IMU_Update();
+        }
 
-		switch (phase)
-		{
-		/* ---- 1. 前导零：0000→9999 ---- */
-		case TEST_NUM_LEADING_ZERO:
-			TM1637_DisplayNum((int16_t)counter, true);
-			counter++;
-			if (counter > 9999) counter = 0;
-			break;
+        /* ======== 按键检测 & 任务启动 ======== */
+        QuestionState_t st = StateMachine_GetState();
+        if (st != last_state)
+        {
+            last_state = st;
+            if (st != STATE_IDLE)
+            {
+                StateMachine_StartTask(st);
+                lost_debounce = 0;
+            }
+            else
+            {
+                Motor_Brake();
+            }
+        }
 
-		/* ---- 2. 前导消隐：0→9999 ---- */
-		case TEST_NUM_NO_ZERO:
-			TM1637_DisplayNum((int16_t)counter, false);
-			counter++;
-			if (counter > 9999) counter = 0;
-			break;
+        /* ======== 当前段类型 → 控制模式 ======== */
+        SegmentType_t seg = StateMachine_GetCurrentSegment();
+        uint8_t mask = Grayscale_ReadAll();
+        bool on_line = (mask != 0xFF);
 
-		/* ---- 3. 负数 ---- */
-		case TEST_NEGATIVE:
-		{
-			int16_t neg_vals[] = {-1, -12, -123, -999};
-			TM1637_DisplayNum(neg_vals[counter % 4], false);
-			counter++;
-			break;
-		}
+        if (seg == SEG_ARC)
+        {
+            /* 循迹模式 */
+            Angle_Enable(false);
 
-		/* ---- 4. 时间 MM:SS（冒号 400ms 周期闪烁） ---- */
-		case TEST_TIME:
-		{
-			uint8_t min = sec / 60;
-			uint8_t s   = sec % 60;
+            /* 差速控制：舵机偏向越大，两轮速度差越大 */
+            {
+                float diff = tracking_last_servo * ARC_DIFF_GAIN;
+                float left_speed  = SPEED_ARC + diff;
+                float right_speed = SPEED_ARC - diff;
+                Motor_SetSpeedLR(left_speed, right_speed);
+            }
 
-			if (counter % 2 == 0) colon_state = !colon_state;
+            /* 刚切入弧线段时复位 PID */
+            if (last_seg != SEG_ARC)
+            {
+                PID_Reset(&tracking_pid);
+                PID_SetTarget(&tracking_pid, 0.0f);
+                tracking_last_servo = 0;
+            }
 
-			TM1637_DisplayTime(min, s, colon_state);
-			counter++;
-			sec++;
-			if (sec >= 3600) sec = 0;
-			break;
-		}
+            /* 定周期计算循迹 PID（10ms） */
+            if (now - last_tracking >= 10)
+            {
+                last_tracking = now;
+                float position = Tracking_CalcPosition(mask);
+                if (position != 99.0f)
+                {
+                    float steering = PID_Compute(&tracking_pid, -position);
+                    int32_t servo_out = (int32_t)steering;
 
-		/* ---- 5. 亮度 0→7→0（显示 8888） ---- */
-		case TEST_BRIGHTNESS:
-		{
-			uint8_t segs[4] = {0x7F, 0x7F, 0x7F, 0x7F}; /* 8. 不含 DP */
+                    /* slew rate 限幅 */
+                    int32_t delta = servo_out - tracking_last_servo;
+                    if (delta > TRACKING_SLEW_MAX)
+                        servo_out = tracking_last_servo + TRACKING_SLEW_MAX;
+                    else if (delta < -TRACKING_SLEW_MAX)
+                        servo_out = tracking_last_servo - TRACKING_SLEW_MAX;
 
-			TM1637_SetBrightness(brightness);
-			TM1637_DisplaySegments(segs);
+                    tracking_last_servo = servo_out;
+                    Servo_SetValue(servo_out);
+                }
+                else
+                {
+                    /* 全白丢线：舵机缓慢回中，防止卡在上次纠偏角度 */
+                    if (tracking_last_servo > TRACKING_SLEW_MAX)
+                        tracking_last_servo -= TRACKING_SLEW_MAX;
+                    else if (tracking_last_servo < -TRACKING_SLEW_MAX)
+                        tracking_last_servo += TRACKING_SLEW_MAX;
+                    else
+                        tracking_last_servo = 0;
+                    Servo_SetValue(tracking_last_servo);
+                }
+            }
+        }
+        else if (seg == SEG_STRAIGHT)
+        {
+            /* 角度保持模式：进入时以当前 yaw 为基准 + 相对偏转角 */
+            if (!Angle_IsEnabled())
+            {
+                Angle_Enable(true);
+                Angle_SetTargetRelative(StateMachine_GetDeltaDeg());
+            }
+            /* 差速辅助转向：舵偏越大两轮速差越大，加速回正 */
+            {
+                int32_t servo = Angle_GetServoValue();
+                float diff = servo * ARC_DIFF_GAIN;
+                float left_speed  = SPEED_STRAIGHT + diff;
+                float right_speed = SPEED_STRAIGHT - diff;
+                Motor_SetSpeedLR(left_speed, right_speed);
+            }
+        }
+        else  // SEG_STOP
+        {
+            Angle_Enable(false);
+            Motor_Brake();
+        }
 
-			brightness = (uint8_t)((int8_t)brightness + bright_dir);
-			if (brightness >= 7) bright_dir = -1;
-			if (brightness == 0) bright_dir = 1;
+        /* ======== 角度 PID 定时计算 ======== */
+        if (now - last_angle_pid >= ANGLE_PID_DT_MS)
+        {
+            last_angle_pid = now;
+            Angle_Compute();
+        }
 
-			counter++;
-			break;
-		}
+        /* ======== 段切换检测 ======== */
+        if (seg == SEG_ARC)
+        {
+            if (!on_line)
+            {
+                if (++lost_debounce >= LINE_LOST_DEBOUNCE)
+                {
+                    lost_debounce = 0;
+                    StateMachine_SegmentDone();
+                }
+            }
+            else
+            {
+                lost_debounce = 0;
+            }
+        }
+        else if (seg == SEG_STRAIGHT)
+        {
+            if (on_line)
+            {
+                if (!StateMachine_NeedLeaveFirst())
+                {
+                    StateMachine_SegmentDone();
+                }
+            }
+            else
+            {
+                if (StateMachine_NeedLeaveFirst())
+                {
+                    StateMachine_LeftLine();
+                }
+                lost_debounce = 0;
+            }
+        }
 
-		/* ---- 6. 逐位点亮全部段（含小数点） ---- */
-		case TEST_SEGMENTS:
-		{
-			uint8_t segs[4] = {0, 0, 0, 0};
-			segs[seg_pos] = 0xFF;
+        /* ======== 终点停车 ======== */
+        if (StateMachine_IsFinished())
+        {
+            Motor_Brake();
+        }
 
-			TM1637_DisplaySegments(segs);
+        last_seg = seg;
 
-			seg_pos++;
-			if (seg_pos >= 4) seg_pos = 0;
-			counter++;
-			break;
-		}
+        /* ======== UART 遥测（每 100ms） ======== */
+        if (now - last_output >= 100)
+        {
+            last_output = now;
 
-		default:
-			break;
-		}
-	}
+            float roll, pitch, yaw;
+            IMU_GetEuler(&roll, &pitch, &yaw);
+
+            sprintf(buf, "yaw %.1f", yaw);
+            OLED_ShowString(32, 0, buf, 16);
+            sprintf(buf, "yaw_t %.1f", Angle_GetTarget());
+            OLED_ShowString(32, 2, buf, 16);
+
+            float pos = Tracking_CalcPosition(mask);
+            float trk_out = tracking_pid.output;
+
+            UART_Printf(Board_GetUART(),
+                "%d, %.1f, %.1f, %.1f, %ld, %d, %d, %d, %.2f, %.1f, %ld\n",
+                seg,
+                yaw,
+                Angle_GetTarget(),
+                Angle_GetPIDOutput(),
+                (long)Angle_GetServoValue(),
+                on_line,
+                lost_debounce,
+                mask,
+                pos,
+                trk_out,
+                (long)tracking_last_servo);
+        }
+    }
 }
