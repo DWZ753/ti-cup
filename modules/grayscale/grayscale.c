@@ -24,5 +24,5 @@ uint8_t Grayscale_ReadAll(void)
         if (DL_GPIO_readPins(GRAYSCALE_PORT, grayscale_pins[i]))
             mask |= (1 << i);
     }
-    return mask;
+    return ~mask;
 }

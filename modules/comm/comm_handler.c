@@ -24,12 +24,7 @@ static Comm_Config s_cfg;
 static uint32_t    s_last_imu;
 static uint32_t    s_last_us;
 
-/* ========== 辅助：大端 int16 读写 ========== */
-
-static int16_t get_i16(const uint8_t *buf)
-{
-	return (int16_t)(((uint16_t)buf[0] << 8) | buf[1]);
-}
+/* ========== 辅助：大端 int16 写入 ========== */
 
 static void put_i16(uint8_t *buf, int16_t val)
 {
