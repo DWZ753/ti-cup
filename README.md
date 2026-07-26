@@ -118,7 +118,7 @@ bsp/                  # 外设抽象层（SPI、I2C、UART、Delay）
 
 1. 用 CCS Theia 打开项目目录
 2. 运行 SysConfig（`empty.syscfg`）生成 `ti_msp_dl_config.c/.h`
-3. 点击 Build（Ctrl+B）编译，输出 `Debug/ti_cup_2024h.out`
+3. 点击 Build（Ctrl+B）编译，输出 `Debug/${ProjName}.out`
 4. 通过 J-Link 烧录到 LP-MSPM0G3507 LaunchPad
 
 **关键依赖**：
