@@ -2,18 +2,9 @@
 #define __TB6612_H__
 
 #include <stdint.h>
-#include "ti_msp_dl_config.h"
 
-// 这些宏定义根据实际情况在移植后修改
-#define TB6612_PWM_TIMER 								PWM_MOTOR_INST
-#define TB6612_PWM_A_PIN								GPIO_PWM_MOTOR_C0_IDX
-#define TB6612_PWM_B_PIN								GPIO_PWM_MOTOR_C1_IDX
-#define TB6612_GPIO_PORT								GPIO_PWM_MOTOR_C0_PORT
-#define TB6612_GPIO_AIN1_PIN							GPIO_MOTORs_GPIO_MOTOR1_IN1_PIN
-#define TB6612_GPIO_AIN2_PIN							GPIO_MOTORs_GPIO_MOTOR1_IN2_PIN
-#define TB6612_GPIO_BIN1_PIN							GPIO_MOTORs_GPIO_MOTOR2_IN1_PIN
-#define TB6612_GPIO_BIN2_PIN							GPIO_MOTORs_GPIO_MOTOR2_IN2_PIN
-#define TB6612_PWM_PERIOD_COUNT							10000
+// 以下常量供外部使用（motor.h 等），引脚宏已移至 tb6612.c
+#define TB6612_PWM_PERIOD_COUNT  10000
 
 /**
  * @brief 初始化 TB6612 电机驱动模块，启动 PWM 定时器
