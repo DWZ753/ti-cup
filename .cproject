@@ -43,7 +43,11 @@
                                     <listOptionValue value="${PROJECT_ROOT}/modules"/>
                                     <listOptionValue value="${PROJECT_ROOT}/modules/oled"/>
                                     <listOptionValue value="${PROJECT_ROOT}/bsp"/>
-
+                                    <listOptionValue value="${PROJECT_ROOT}/application"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/application/pid"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/application/pid_helper"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/application/chassis"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/application/gimbal"/>
                                     <listOptionValue value="${PROJECT_ROOT}/modules/comm"/>
                                     <listOptionValue value="${PROJECT_ROOT}/modules/imu/bmi088"/>
                                     <listOptionValue value="${PROJECT_ROOT}/modules/imu"/>
@@ -71,7 +75,7 @@
                                     <listOptionValue value="${COM_TI_MSPM0_SDK_SYMBOLS}"/>
                                     <listOptionValue value="${SYSCONFIG_TOOL_SYMBOLS}"/>
                                 </option>
-                                <option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_4.0.compilerID.OPT_LEVEL.1534206460" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_4.0.compilerID.OPT_LEVEL" value="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_4.0.compilerID.OPT_LEVEL.0" valueType="enumerated"/>
+                                <option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_4.0.compilerID.OPT_LEVEL.1534206460" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_4.0.compilerID.OPT_LEVEL" value="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_4.0.compilerID.OPT_LEVEL.2" valueType="enumerated"/>
                                 <option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_4.0.compilerID.CMD_FILE.1537622001" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_4.0.compilerID.CMD_FILE" valueType="stringList">
                                     <listOptionValue value="device.opt"/>
                                 </option>
