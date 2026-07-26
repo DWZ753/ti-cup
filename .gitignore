@@ -1,0 +1,20 @@
+# IDE - TI Code Composer Studio
+# .ccsproject, .cproject, .project, .settings/ are TRACKED
+# so the repo can be cloned and imported directly into CCS Theia.
+
+# IDE - VS Code
+.vscode/
+
+# Build output
+Debug/
+
+# Generated files
+README.html
+
+# clangd
+.clangd
+.clangd/
+
+# Claude Code
+.claude/
+CLAUDE.md
