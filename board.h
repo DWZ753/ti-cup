@@ -2,11 +2,10 @@
 #define BOARD_H
 
 #include <stdint.h>
-#include "uart.h"
 
 /**
- * @brief 板级初始化，按依赖顺序调用所有模块的 Init
- * @note  调用前需确保 SYSCFG_DL_init() 已执行
+ * @brief 板级初始化模板（公共驱动基线）
+ * @note  赛题分支基于此文件扩展，添加各自外设的初始化
  */
 void Board_Init(void);
 
@@ -15,17 +14,5 @@ void Board_Init(void);
  * @return 自启动以来的毫秒数
  */
 uint32_t Board_GetTickMs(void);
-
-/**
- * @brief 获取 UART 打印句柄
- * @return UART 句柄指针
- */
-UART_Handle* Board_GetUART(void);
-
-/**
- * @brief 获取树莓派通信 UART 句柄 (UART1)
- * @return UART 句柄指针
- */
-UART_Handle* Board_GetUART_PI(void);
 
 #endif
