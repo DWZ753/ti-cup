@@ -1,9 +1,8 @@
 /**
  * @file board.c
- * @brief 板级初始化模板（公共驱动基线）
+ * @brief 板级初始化（计分显示装置端）
  *
- * 赛题分支基于此文件扩展，添加各自外设的初始化。
- * 编译前需确保 empty.syscfg 已配置所需外设。
+ * 初始化顺序：SysTick → 定时器 → 执行器 → 输入 → 通信 → 显示
  */
 #include "board.h"
 #include "ti_msp_dl_config.h"

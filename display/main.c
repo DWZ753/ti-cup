@@ -1,8 +1,8 @@
 /**
  * @file main.c
- * @brief 主入口模板（公共驱动基线）
+ * @brief 智能物流搬运系统 — 无线计分显示装置
  *
- * 赛题分支基于此文件扩展。完整赛题逻辑见各分支的 main.c。
+ * 搭载：数码管、按键、LED 指示灯、蜂鸣器、无线通信模块
  */
 #include "ti_msp_dl_config.h"
 #include "board.h"
