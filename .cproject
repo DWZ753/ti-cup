@@ -49,9 +49,7 @@
                                     <listOptionValue value="${PROJECT_ROOT}/modules/comm"/>
                                     <listOptionValue value="${PROJECT_ROOT}/modules/imu/bmi088"/>
                                     <listOptionValue value="${PROJECT_ROOT}/modules/imu"/>
-
                                     <listOptionValue value="${PROJECT_ROOT}/modules/algorithm/pid"/>
-
                                     <listOptionValue value="${PROJECT_ROOT}/modules/pid_helper"/>
                                     <listOptionValue value="${PROJECT_ROOT}/bsp/uart"/>
                                     <listOptionValue value="${PROJECT_ROOT}/bsp/spi"/>
@@ -119,7 +117,7 @@
                         </toolChain>
                     </folderInfo>
                     <sourceEntries>
-                        <entry excluding="application/gimbal|modules/zdt_motor" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
+                        <entry excluding="modules/motor|modules/ultrasonic|modules/tb6612|modules/imu|modules/comm|modules/grayscale|modules/zdt_motor" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
                     </sourceEntries>
                 </configuration>
             </storageModule>
