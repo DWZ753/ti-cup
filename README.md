@@ -20,8 +20,6 @@ ti_cup/                       ← Git 仓库根目录
 │   └── application/          ← 显示装置控制
 ├── bsp/                      ← 共享 BSP 层（外设抽象）
 ├── modules/                  ← 共享功能模块
-├── shared/                   ← 两 MCU 共享协议定义
-│   └── protocol.h
 └── questions/                ← 赛题文档
 ```
 
@@ -39,7 +37,7 @@ ti_cup/                       ← Git 仓库根目录
 
 ### 通信
 
-小车 ↔ 计分显示装置 通过短距离无线通信模块交换指令和状态，协议定义见 [shared/protocol.h](shared/protocol.h)。
+小车 ↔ 计分显示装置 通过短距离无线通信模块交换指令和状态，协议命令码由各 MCU 应用层自行定义。
 
 ## 在 CCS Theia 中打开项目
 
@@ -48,7 +46,7 @@ ti_cup/                       ← Git 仓库根目录
 1. 用 CCS Theia 打开 `car/` 目录 → 小车项目（`ti_cup_car`）
 2. 用 CCS Theia 打开 `display/` 目录 → 显示装置项目（`ti_cup_display`）
 
-两个项目共享根目录的 `bsp/`、`modules/` 和 `shared/`，通过 `.cproject` 中的 `../` 相对路径引用。
+两个项目共享根目录的 `bsp/`、`modules/`，通过 `.cproject` 中的 `../` 相对路径引用。
 
 ## 硬件平台
 
