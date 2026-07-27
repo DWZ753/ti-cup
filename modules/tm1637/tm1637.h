@@ -7,7 +7,7 @@
 /**
  * @brief TM1637 四位数码管驱动模块
  *
- * 自包含初始化：依赖 SysConfig 生成 GPIO_TM1637 (CLK=PB3, DIO=PB7)，
+ * 自包含初始化：依赖 SysConfig 生成 GPIO_TM1637 (CLK=PB3, DIO=PB25)，
  * 不依赖 BSP 抽象层，直接使用 DriverLib GPIO API。
  *
  * 协议类似 I2C：start → cmd → stop → start → data → stop → start → ctrl → stop

@@ -16,17 +16,15 @@
 #include "oled.h"
 #include "servo.h"
 
+/* ========== 通信 ========== */
+#include "uart.h"
 
-/**
- * @brief 板级初始化（计分显示装置）
- * @note  初始化顺序：SysTick → 定时器 → 外设 → 通信
- */
 void Board_Init(void);
+uint32_t Board_GetTickMs(void);
 
 /**
- * @brief 获取系统 1ms 滴答计数
- * @return 自启动以来的毫秒数
+ * @brief 获取蓝牙通信 UART 句柄（UART1, PB6/TX, PB7/RX）
  */
-uint32_t Board_GetTickMs(void);
+UART_Handle* Board_GetUART_BT(void);
 
 #endif
