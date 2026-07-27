@@ -46,7 +46,7 @@
                                     <listOptionValue value="${PROJECT_ROOT}/application"/>
                                     <listOptionValue value="${PROJECT_ROOT}/application/chassis"/>
                                     <listOptionValue value="${PROJECT_ROOT}/application/gimbal"/>
-                                    <listOptionValue value="${PROJECT_ROOT}/modules/comm"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/application/comm"/>
                                     <listOptionValue value="${PROJECT_ROOT}/modules/imu/bmi088"/>
                                     <listOptionValue value="${PROJECT_ROOT}/modules/imu"/>
 
