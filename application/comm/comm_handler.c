@@ -66,7 +66,7 @@ static void on_frame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 
 	switch (cmd)
 	{
-	case 0x13:
+	case CMD_OLED_SHOW:
 		handle_oled_show(payload, len);
 		break;
 

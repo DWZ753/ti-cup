@@ -7,22 +7,7 @@
 /* ========== 帧参数 ========== */
 
 /** 单帧最大载荷字节数 */
-#define PROTOCOL_MAX_PAYLOAD  32
-
-/* ========== 命令字 ========== */
-
-/* ---- RPi → MCU ---- */
-#define CMD_LINE_OFFSET     0x10  /* int16 dx (mm) */
-#define CMD_TARGET_ANGLE    0x11  /* int16 angle (0.01°) */
-#define CMD_SPEED_CMD       0x12  /* int16 vL, int16 vR (mm/s) */
-#define CMD_EMERGENCY_STOP  0x1F  /* 无载荷 */
-
-/* ---- MCU → RPi ---- */
-#define CMD_IMU_DATA        0x20  /* int16 roll, pitch, yaw (0.01°) */
-#define CMD_ENCODER_DATA    0x21  /* int16 left_rpm, right_rpm */
-#define CMD_ULTRASONIC      0x22  /* int16 dist_mm */
-#define CMD_STATUS          0x2F  /* uint8 state */
-#define CMD_ERROR           0xFF  /* string msg */
+#define PROTOCOL_MAX_PAYLOAD  64
 
 /* ========== 回调类型 ========== */
 

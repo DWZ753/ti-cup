@@ -5,7 +5,6 @@
  * 控制逻辑全部封装在 Chassis_Init() / Chassis_Task() 中。
  * 可调参数见 application/chassis/chassis_config.h。
  */
-
 #include "ti_msp_dl_config.h"
 #include "board.h"
 #include "chassis.h"
