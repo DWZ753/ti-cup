@@ -8,6 +8,11 @@
 #include "ti_msp_dl_config.h"
 #include "pit_fast_tick.h"
 #include "pit_control_tick.h"
+#include "tb6612.h"
+#include "servo.h"
+#include "motor.h"
+#include "grayscale.h"
+#include "key.h"
 
 static volatile uint32_t s_tick_ms;
 
@@ -18,10 +23,19 @@ static void tick_cb(void)
 
 void Board_Init(void)
 {
-	SYSCFG_DL_init();
+	/* 1. 系统滴答 */
 	PIT_Fast_Tick_Init();
 	PIT_Fast_Tick_RegisterCallback(tick_cb);
 	PIT_Control_Tick_Init();
+
+	/* 2. 执行器 */
+	TB6612_Init();
+	Servo_Init();
+	Motor_Init();
+
+	/* 3. 输入 */
+	Grayscale_Init();
+	Key_Init();
 }
 
 uint32_t Board_GetTickMs(void)

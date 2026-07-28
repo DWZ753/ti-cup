@@ -17,7 +17,6 @@ const GPIO4  = GPIO.addInstance();
 const GPIO5  = GPIO.addInstance();
 const GPIO6  = GPIO.addInstance();
 const GPIO7  = GPIO.addInstance();
-const GPIO8  = GPIO.addInstance();
 const I2C    = scripting.addModule("/ti/driverlib/I2C", {}, false);
 const I2C1   = I2C.addInstance();
 const PWM    = scripting.addModule("/ti/driverlib/PWM", {}, false);
@@ -32,6 +31,7 @@ const TIMER2 = TIMER.addInstance();
 const UART   = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1  = UART.addInstance();
 const UART2  = UART.addInstance();
+const UART3  = UART.addInstance();
 
 /**
  * Write custom configuration values to the imported modules.
@@ -187,15 +187,6 @@ GPIO7.associatedPins[1].interruptEn      = true;
 GPIO7.associatedPins[1].polarity         = "RISE_FALL";
 GPIO7.associatedPins[1].pin.$assign      = "PA8";
 
-GPIO8.$name                              = "GPIO_TM1637";
-GPIO8.associatedPins.create(2);
-GPIO8.associatedPins[0].$name            = "CLK";
-GPIO8.associatedPins[0].ioStructure      = "SD";
-GPIO8.associatedPins[0].pin.$assign      = "PB3";
-GPIO8.associatedPins[1].$name            = "DIO";
-GPIO8.associatedPins[1].ioStructure      = "SD";
-GPIO8.associatedPins[1].pin.$assign      = "PB7";
-
 I2C1.$name                             = "I2C_OLED";
 I2C1.basicEnableController             = true;
 I2C1.basicControllerStandardBusSpeed   = "Fast";
@@ -309,18 +300,33 @@ UART1.DMA_CHANNEL_TX.addressMode       = "b2f";
 UART2.$name                            = "UART_PI";
 UART2.targetBaudRate                   = 115200;
 UART2.enabledInterrupts                = ["RX"];
-UART2.peripheral.$assign               = "UART1";
-UART2.peripheral.rxPin.$assign         = "PA9";
-UART2.peripheral.txPin.$assign         = "PB6";
-UART2.txPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric10";
+UART2.peripheral.$assign               = "UART3";
+UART2.peripheral.rxPin.$assign         = "PA25";
+UART2.peripheral.txPin.$assign         = "PA26";
 UART2.txPinConfig.direction            = scripting.forceWrite("OUTPUT");
 UART2.txPinConfig.hideOutputInversion  = scripting.forceWrite(false);
 UART2.txPinConfig.onlyInternalResistor = scripting.forceWrite(false);
 UART2.txPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
-UART2.rxPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric11";
+UART2.txPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric10";
 UART2.rxPinConfig.hideOutputInversion  = scripting.forceWrite(false);
 UART2.rxPinConfig.onlyInternalResistor = scripting.forceWrite(false);
 UART2.rxPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
+UART2.rxPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric11";
+
+UART3.$name                            = "UART_BT";
+UART3.targetBaudRate                   = 115200;
+UART3.enabledInterrupts                = ["RX"];
+UART3.peripheral.rxPin.$assign         = "PB7";
+UART3.peripheral.txPin.$assign         = "PB6";
+UART3.txPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric12";
+UART3.txPinConfig.direction            = scripting.forceWrite("OUTPUT");
+UART3.txPinConfig.hideOutputInversion  = scripting.forceWrite(false);
+UART3.txPinConfig.onlyInternalResistor = scripting.forceWrite(false);
+UART3.txPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
+UART3.rxPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric13";
+UART3.rxPinConfig.hideOutputInversion  = scripting.forceWrite(false);
+UART3.rxPinConfig.onlyInternalResistor = scripting.forceWrite(false);
+UART3.rxPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
 
 /**
  * Pinmux solution for unlocked pins/peripherals. This ensures that minor changes to the automatic solver in a future
@@ -331,3 +337,4 @@ Board.peripheral.$suggestSolution                = "DEBUGSS";
 Board.peripheral.swclkPin.$suggestSolution       = "PA20";
 Board.peripheral.swdioPin.$suggestSolution       = "PA19";
 UART1.DMA_CHANNEL_TX.peripheral.$suggestSolution = "DMA_CH0";
+UART3.peripheral.$suggestSolution                = "UART1";
