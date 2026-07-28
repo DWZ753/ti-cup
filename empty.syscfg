@@ -174,18 +174,10 @@ GPIO6.associatedPins[7].ioStructure      = "SD";
 GPIO6.associatedPins[7].internalResistor = "PULL_UP";
 GPIO6.associatedPins[7].pin.$assign      = "PB11";
 
-GPIO7.$name                              = "GPIO_ULTRASONIC";
-GPIO7.associatedPins.create(2);
-GPIO7.associatedPins[0].$name            = "TRIGGER";
-GPIO7.associatedPins[0].ioStructure      = "SD";
-GPIO7.associatedPins[0].pin.$assign      = "PA16";
-GPIO7.associatedPins[1].$name            = "ECHO";
-GPIO7.associatedPins[1].direction        = "INPUT";
-GPIO7.associatedPins[1].ioStructure      = "SD";
-GPIO7.associatedPins[1].internalResistor = "PULL_DOWN";
-GPIO7.associatedPins[1].interruptEn      = true;
-GPIO7.associatedPins[1].polarity         = "RISE_FALL";
-GPIO7.associatedPins[1].pin.$assign      = "PA8";
+GPIO7.$name                         = "GPIO_MAGNETs";
+GPIO7.associatedPins[0].$name       = "GPIO_MAGNET";
+GPIO7.associatedPins[0].ioStructure = "SD";
+GPIO7.associatedPins[0].pin.$assign = "PA16";
 
 I2C1.$name                             = "I2C_OLED";
 I2C1.basicEnableController             = true;

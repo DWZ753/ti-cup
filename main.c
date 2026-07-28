@@ -26,11 +26,17 @@
 #define TRACK_OUTPUT_LIMIT  100.0f   /**< 舵机输出限幅 */
 #define TRACK_SLEW_MAX      6        /**< 舵机每帧最大变化量 */
 
+/* ========== 电磁铁 ========== */
+
+#define MAGNET_PORT  GPIO_MAGNETs_PORT
+#define MAGNET_PIN   GPIO_MAGNETs_GPIO_MAGNET_PIN
+
 /* ========== 状态 ========== */
 
 static PID_Controller s_track_pid;
 static bool           s_running;
 static int32_t        s_last_servo;
+static bool           s_magnet_on;
 
 /* ========== 控制回调（PIT 每 20ms 调用） ========== */
 
@@ -92,9 +98,11 @@ int main(void)
 	/* 注册控制回调 */
 	PIT_Control_Tick_RegisterCallback(Control_Tick);
 
-	/* 初始状态：待命，电机停止 */
+	/* 初始状态：待命，电机停止，电磁铁关闭 */
 	s_running    = false;
 	s_last_servo = 0;
+	s_magnet_on  = false;
+	DL_GPIO_clearPins(MAGNET_PORT, MAGNET_PIN);
 
 	while (1)
 	{
@@ -116,6 +124,16 @@ int main(void)
 				Servo_SetValue(0);
 				s_last_servo = 0;
 			}
+		}
+
+		/* KEY2：电磁铁翻转 */
+		if (Key_GetFlag(1))
+		{
+			s_magnet_on = !s_magnet_on;
+			if (s_magnet_on)
+				DL_GPIO_setPins(MAGNET_PORT, MAGNET_PIN);
+			else
+				DL_GPIO_clearPins(MAGNET_PORT, MAGNET_PIN);
 		}
 	}
 }

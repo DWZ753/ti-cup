@@ -5,7 +5,6 @@
 #include "ti_msp_dl_config.h"
 #include "tb6612.h"
 #include "pit_control_tick.h"
-#include "ultrasonic.h"
 #include <stdbool.h>
 
 // PWM 占空比下限：低于此值电机无法转动
@@ -50,7 +49,7 @@ void Motor_Init(void)
 {
     Motor_Stop();
     Motor_ResetEncoder();
-    NVIC_EnableIRQ(GPIO_MULTIPLE_GPIOA_INT_IRQN);
+    NVIC_EnableIRQ(GPIO_MOTORs_INT_IRQN);
     PIT_Control_Tick_RegisterCallback(Motor_TickHandler);
 }
 
@@ -158,7 +157,6 @@ void GROUP1_IRQHandler(void)
     {
         case DL_INTERRUPT_GROUP1_IIDX_GPIOA:
             encoder_isr();
-            Ultrasonic_ECHO_ISR();
             break;
 
         default:
