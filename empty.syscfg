@@ -268,10 +268,10 @@ TIMER2.timerStartTimer    = true;
 TIMER2.$name              = "PIT_CONTROL_TICK";
 TIMER2.peripheral.$assign = "TIMG0";
 
-UART1.$name                            = "PRINT";
 UART1.enabledDMATXTriggers             = "DL_UART_DMA_INTERRUPT_TX";
 UART1.enabledInterrupts                = ["DMA_DONE_TX","RX"];
 UART1.targetBaudRate                   = 115200;
+UART1.$name                            = "UART_ZDT_MOTOR";
 UART1.peripheral.$assign               = "UART0";
 UART1.peripheral.rxPin.$assign         = "PA11";
 UART1.peripheral.txPin.$assign         = "PA10";
@@ -310,15 +310,15 @@ UART3.targetBaudRate                   = 115200;
 UART3.enabledInterrupts                = ["RX"];
 UART3.peripheral.rxPin.$assign         = "PB7";
 UART3.peripheral.txPin.$assign         = "PB6";
-UART3.txPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric12";
 UART3.txPinConfig.direction            = scripting.forceWrite("OUTPUT");
 UART3.txPinConfig.hideOutputInversion  = scripting.forceWrite(false);
 UART3.txPinConfig.onlyInternalResistor = scripting.forceWrite(false);
 UART3.txPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
-UART3.rxPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric13";
+UART3.txPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric12";
 UART3.rxPinConfig.hideOutputInversion  = scripting.forceWrite(false);
 UART3.rxPinConfig.onlyInternalResistor = scripting.forceWrite(false);
 UART3.rxPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
+UART3.rxPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric13";
 
 /**
  * Pinmux solution for unlocked pins/peripherals. This ensures that minor changes to the automatic solver in a future

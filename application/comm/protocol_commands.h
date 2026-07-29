@@ -27,6 +27,18 @@
 #define CMD_TIME          0x13  /**< 上报单球耗时    payload: uint16 (s, 大端) */
 #define CMD_COMPLETE      0x14  /**< 全部搬运完成（无载荷） */
 
+/* ---- 树莓派 → MSPM0 小车 ---- */
+#define CMD_GUIDE         0x20  /**< 锁定引导: speed(int8), diff(int8) */
+#define CMD_STOP          0x21  /**< 立即停车（丢锁/误检/到达）（无载荷） */
+#define CMD_MAGNET_ON     0x22  /**< 电磁铁吸合（无载荷） */
+#define CMD_MAGNET_OFF    0x23  /**< 电磁铁释放（无载荷） */
+#define CMD_GIMBAL        0x24  /**< 云台pitch: angle_deg(int16_t, 大端) */
+#define CMD_RESUME_LINE   0x2F  /**< 回到灰度循迹模式（无载荷） */
+
+/* ---- MSPM0 小车 → 树莓派 ---- */
+#define CMD_GIMBAL_OK     0x30  /**< 云台已到位（无载荷） */
+#define CMD_FAULT         0x3F  /**< 故障: error_code(uint8_t) */
+
 /* ================================================================
  * 系统状态
  * ================================================================ */
@@ -36,6 +48,16 @@ typedef enum {
 	STATUS_RUNNING = 1,  /**< 运行中 */
 	STATUS_FAULT   = 2,  /**< 故障 */
 } system_status_e;
+
+/* ================================================================
+ * 故障码（CMD_FAULT 的 payload）
+ * ================================================================ */
+
+typedef enum {
+	FAULT_TIMEOUT      = 1,  /**< GUIDED 模式 200ms 未收到指令，已自动停车 */
+	FAULT_GIMBAL_OCP   = 2,  /**< 云台过流保护触发 */
+	FAULT_GIMBAL_STALL = 3,  /**< 云台堵转 */
+} fault_code_e;
 
 /* ================================================================
  * 辅助：大端 int16 读写

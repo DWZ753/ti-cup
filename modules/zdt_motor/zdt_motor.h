@@ -19,8 +19,8 @@
 
 /* ========== 硬件映射宏（SysConfig 重新生成后只需修改此处） ========== */
 
-#define ZDT_MOTOR_UART_INST           MOTOR_INST
-#define ZDT_MOTOR_UART_INT_IRQN       MOTOR_INST_INT_IRQN
+#define ZDT_MOTOR_UART_INST           UART_ZDT_MOTOR_INST
+#define ZDT_MOTOR_UART_INT_IRQN       UART_ZDT_MOTOR_INST_INT_IRQN
 
 /* ========== 常量 ========== */
 

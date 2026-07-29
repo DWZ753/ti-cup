@@ -2,6 +2,7 @@
 #define BOARD_H
 
 #include <stdint.h>
+#include "uart.h"
 
 /**
  * @brief 板级初始化（小车）
@@ -14,5 +15,11 @@ void Board_Init(void);
  * @return 自启动以来的毫秒数
  */
 uint32_t Board_GetTickMs(void);
+
+/**
+ * @brief 获取 Pi 通信 UART 句柄
+ * @return UART 句柄指针（供 Protocol_Init 使用）
+ */
+UART_Handle* Board_GetPiUART(void);
 
 #endif
