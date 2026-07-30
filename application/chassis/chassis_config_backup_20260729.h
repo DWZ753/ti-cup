@@ -1,7 +1,7 @@
 /**
- * @file    chassis_config.h
- * @brief   底盘控制可调参数 — 所有需要上赛道后实测调整的参数集中在此
- * @note    修改此文件后重新编译即可生效，无需改动 main.c
+ * @file    chassis_config_backup_20260729.h
+ * @brief   【备份】底盘控制可调参数 — 2026-07-29 备份版本
+ * @note    此文件为备份，不会被编译。恢复时覆盖 chassis_config.h 即可。
  */
 
 #ifndef __CHASSIS_CONFIG_H__
@@ -13,8 +13,8 @@
 
 /* ========== 固定速度（mm/s，开环基准） ========== */
 
-#define SPEED_STRAIGHT          600.0f  // 直道速度
-#define SPEED_ARC               600.0f   // 弯道速度
+#define SPEED_STRAIGHT          1000.0f  // 直道速度
+#define SPEED_ARC               800.0f   // 弯道速度
 
 // |舵机输出| 超过此值判定为弯道，切换到 SPEED_ARC
 #define SERVO_CURVE_THRESHOLD   25
@@ -24,26 +24,6 @@
 // 舵机角度 × 增益 = 两轮速度差 (mm/s)
 // 值越大差速转向越猛，值越小越柔和
 #define ARC_DIFF_GAIN           7.3f
-
-/* ========== 传感器权重（索引 0..7，左→右） ========== */
-
-// 每个传感器在加权平均中的贡献权重
-// 权重越大该位置对结果影响越大；中心高、边缘低 → 边缘柔和
-// 传感器阵列:     0    1    2    3    4    5    6    7
-//                左 ← ← ← 中心 → → → 右
-#define TRACKING_W0             0.6f
-#define TRACKING_W1             0.65f
-#define TRACKING_W2             0.95f
-#define TRACKING_W3             1.0f
-#define TRACKING_W4             1.0f
-#define TRACKING_W5             0.95f
-#define TRACKING_W6             0.65f
-#define TRACKING_W7             0.6f
-
-/* ========== 循迹位置曲线 ========== */
-
-// 指数: 1=线性, 2=平方, 3=立方（与权重叠加使用，设为 1 则仅靠权重控制）
-#define TRACKING_CURVE_POWER    1
 
 /* ========== 循迹 PID ========== */
 

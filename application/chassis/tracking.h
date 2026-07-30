@@ -1,8 +1,8 @@
 /**
  * @file    tracking.h
- * @brief   循迹模块 — 灰度传感器位置解算
+ * @brief   循迹模块 — 灰度传感器位置解算 + 循迹控制 + 停车检测
  *
- * 不依赖 IMU / motor / servo，只依赖灰度 mask 输入。
+ * 所有循迹相关状态和逻辑封装在此模块，main.c 仅通过 API 调度。
  */
 
 #ifndef __TRACKING_H__
@@ -10,6 +10,7 @@
 
 #include "ti_msp_dl_config.h"
 #include <stdint.h>
+#include <stdbool.h>
 
 /* ========== 传感器参数 ========== */
 
@@ -24,5 +25,13 @@
  * @return [-1.0f, +1.0f] 负左正右，0 居中；99.0f = 丢线
  */
 float Tracking_CalcPosition(uint8_t mask);
+
+/* ========== 循迹控制 API ========== */
+
+void  Tracking_Init(void);                              // 初始化 PID + 状态
+void  Tracking_Start(void);                             // 启动循迹（复位 PID）
+void  Tracking_Stop(void);                              // 停车（刹车 + 舵机回中 + PID 复位）
+bool  Tracking_IsRunning(void);                         // 查询是否在循迹中
+void  Tracking_Update(uint32_t now_ms, uint8_t mask);   // 自适应速度 + 循迹 PID + 停车检测
 
 #endif
