@@ -28,11 +28,11 @@ typedef enum {
 } TaskMode;
 
 static const uint8_t *s_task_names[TASK_COUNT] = {
-	(uint8_t*)"2.Track Only",
-	(uint8_t*)"3.Bal Static",
-	(uint8_t*)"4.T+B AB",
-	(uint8_t*)"5.T+B Lap@O",
-	(uint8_t*)"6.T+B Lap@X",
+	(uint8_t*)"2.Run 1 Lap",
+	(uint8_t*)"3.Ball Balance",
+	(uint8_t*)"4.Run+Bal AB",
+	(uint8_t*)"5.Run+Bal 1Lap",
+	(uint8_t*)"6.Run+Bal Any",
 };
 
 /* ========== 菜单状态 ========== */
