@@ -15,6 +15,7 @@
 #include "grayscale.h"
 #include "key.h"
 #include "oled.h"
+#include "balance.h"
 
 /* ========== 题目模式（要求2-6） ========== */
 
@@ -122,7 +123,7 @@ static void Running_Show_First(void)
 	OLED_ShowString(0, 7, (uint8_t*)"K2:Stop", 8);
 
 	Format_Time(0);
-	/* 16px 大字居中: 7 字符 × 8px = 56px, (128-56)/2 = 36 */
+	/* 16px 大字居中: 7 字符 x 8px = 56px, (128-56)/2 = 36 */
 	OLED_ShowString(36, 2, s_time_buf, 16);
 }
 
@@ -228,10 +229,7 @@ int main(void)
 
 				if (s_selected_task == TASK_BAL_STATIC)
 				{
-					/*
-					 * TODO: Balance_Start()
-					 * 占位：进入 RUNNING 等待 KEY2 停止
-					 */
+					Balance_Start();
 				}
 				else
 				{
@@ -251,12 +249,24 @@ int main(void)
 				if (Key_GetFlag(1))
 				{
 					stopped = true;
-					Tracking_Stop();
+
+					if (s_selected_task == TASK_BAL_STATIC)
+						Balance_Stop();
+					else
+						Tracking_Stop();
 				}
 
-				/* 循迹内部停车检测自动停 */
-				if (!Tracking_IsRunning())
-					stopped = true;
+				/* 自动停止检测 */
+				if (s_selected_task == TASK_BAL_STATIC)
+				{
+					if (Balance_IsDone())
+						stopped = true;
+				}
+				else
+				{
+					if (!Tracking_IsRunning())
+						stopped = true;
+				}
 
 				if (stopped)
 				{
@@ -288,10 +298,7 @@ int main(void)
 			break;
 
 		case TASK_BAL_STATIC:
-			/*
-			 * TODO: Balance_Update()
-			 * 当前占位：无操作，等待 KEY2 停止
-			 */
+			Balance_SeqUpdate();
 			break;
 		}
 	}

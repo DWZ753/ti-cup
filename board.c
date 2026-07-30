@@ -14,6 +14,7 @@
 #include "grayscale.h"
 #include "key.h"
 #include "oled.h"
+#include "balance.h"
 
 static volatile uint32_t s_tick_ms;
 
@@ -33,6 +34,7 @@ void Board_Init(void)
 	TB6612_Init();
 	Servo_Init();
 	Motor_Init();
+	Balance_Init();
 
 	/* 3. 输入 */
 	Grayscale_Init();
