@@ -31,7 +31,7 @@
  * 正值 = 上抬，负值 = 下压。
  * ⚠️ 必须实测标定：先设 -25°. CCW方向（回零反方向），上电看是否水平，再微调。
  */
-#define BALANCE_HOME_OFFSET_DEG   -60.0f
+#define BALANCE_HOME_OFFSET_DEG   -45.5f
 
 /* ========== 球位置 PD ========== */
 
@@ -42,8 +42,19 @@
 
 /* ========== 底盘前馈 ========== */
 
-/* °/(m/s²)，底盘加速度→补偿倾角 */
-#define FF_ACCEL_GAIN             5.8f
+/* °/(m/s²)，底盘加速度→补偿倾角
+   理论值 ≈ 1/g × 180/π ≈ 5.8
+   实测调节：
+     - 车加速时球往后滚 → 加大此值（如 6.5 ~ 8.0）
+     - 车加速时球往前冲 → 减小此值（如 3.0 ~ 5.0）
+     - 刹车时球往前滚 → 加大；球往后靠 → 减小 */
+#define FF_ACCEL_GAIN             7.5f
+
+/* m/s²，加速度死区：低于此值判定为匀速，摆杆回水平 */
+#define FF_ACCEL_DEADZONE         0.01f
+
+/* 加速度低通系数（0~1）：越大越灵敏但越抖，越小越平滑但滞后 */
+#define FF_ACCEL_FILTER           0.5f
 
 /* ========== 低通滤波器 ========== */
 
@@ -60,18 +71,18 @@
 #define STATIC_SEQ_LEN            7
 
 /* 倾角 >0 = 球往 +x 滚，<0 = 球往 -x 滚 */
-#define STATIC_SEQ_ANGLE_0        5.0f   // 加速向 +5cm
-#define STATIC_SEQ_TIME_0         500
-#define STATIC_SEQ_ANGLE_1        -4.0f  // 减速
-#define STATIC_SEQ_TIME_1         200
+#define STATIC_SEQ_ANGLE_0        10.0f   // 加速向 +5cm
+#define STATIC_SEQ_TIME_0         600
+#define STATIC_SEQ_ANGLE_1        -20.0f  // 减速
+#define STATIC_SEQ_TIME_1         400
 #define STATIC_SEQ_ANGLE_2        0.0f   // 停在 +5cm
-#define STATIC_SEQ_TIME_2         2000
-#define STATIC_SEQ_ANGLE_3        -5.0f  // 加速向 -5cm
-#define STATIC_SEQ_TIME_3         500
-#define STATIC_SEQ_ANGLE_4        4.0f   // 减速
-#define STATIC_SEQ_TIME_4         200
+#define STATIC_SEQ_TIME_2         0
+#define STATIC_SEQ_ANGLE_3        -10.0f  // 加速向 -5cm
+#define STATIC_SEQ_TIME_3         150
+#define STATIC_SEQ_ANGLE_4        30.0f   // 减速
+#define STATIC_SEQ_TIME_4         1500
 #define STATIC_SEQ_ANGLE_5        0.0f   // 停在 -5cm
-#define STATIC_SEQ_TIME_5         2000
+#define STATIC_SEQ_TIME_5         0
 #define STATIC_SEQ_ANGLE_6        0.0f   // 结束
 #define STATIC_SEQ_TIME_6         0
 

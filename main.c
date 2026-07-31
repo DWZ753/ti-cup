@@ -17,13 +17,16 @@
 #include "key.h"
 #include "oled.h"
 #include "balance.h"
+#include "balance_config.h"
 #include "protocol.h"
 #include "motor.h"
+#include "zdt_motor.h"
 
 /* ========== 遥控命令码（Pi → MSPM0） ========== */
 
 #define CMD_MOTOR       0x30  /**< 电机差速: speed(int8), diff(int8) [-100,100] */
 #define CMD_BEAM        0x31  /**< 摆杆倾角: angle(int8) [-10,10] 度 */
+#define CMD_BALL_POS     0x25  /**< Pi → MCU 球位置: pos_mm(int16,BE) + confidence(uint8) */
 #define CMD_STOP         0x32  /**< 立即停止: 无载荷 */
 #define CMD_RESUME_LINE  0x2F  /**< 回到循迹: 无载荷 */
 
@@ -76,6 +79,13 @@ static int8_t   s_rc_speed;       // Pi 下发的速度百分比 [-100, +100]
 static int8_t   s_rc_diff;        // Pi 下发的差速百分比 [-100, +100]
 static int8_t   s_rc_beam;        // Pi 下发的摆杆倾角 (°)
 static uint32_t s_rc_last_ms;     // 最近收到 Pi 指令的时间戳
+
+/* ========== 底盘前馈 ========== */
+
+static float    s_last_chassis_speed;   // 上次左右轮平均速度 (mm/s)
+static uint32_t s_last_ff_ms;          // 上次前馈计算时间戳
+static float    s_ff_accel;            // [调试] 当前滤波后加速度 (m/s²)
+static float    s_ff_angle;            // [调试] 当前 FF 输出倾角 (°)
 
 /**
  * @brief 将毫秒格式化为 "MM:SS.T" 写入 s_time_buf
@@ -135,6 +145,15 @@ static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 		{
 			s_rc_beam = (int8_t)payload[0];
 			Balance_SetAngle((float)s_rc_beam);
+		}
+		break;
+
+	case CMD_BALL_POS:
+		if (len >= 3)
+		{
+			int16_t pos_mm = (int16_t)(((uint16_t)payload[0] << 8) | payload[1]);
+			uint8_t conf   = payload[2];
+			Balance_Update((float)pos_mm, 0.0f, conf);
 		}
 		break;
 
@@ -209,15 +228,57 @@ static void Running_Show_First(void)
 	Format_Time(0);
 	/* 16px 大字居中: 7 字符 x 8px = 56px, (128-56)/2 = 36 */
 	OLED_ShowString(36, 2, s_time_buf, 16);
+
+	/* 编码器测速 + FF 调试 */
+	OLED_ShowString(0, 4, (uint8_t*)"L:", 8);
+	OLED_ShowString(0, 5, (uint8_t*)"R:", 8);
+	OLED_ShowString(64, 4, (uint8_t*)"a:", 8);
+	OLED_ShowString(64, 5, (uint8_t*)"F:", 8);
 }
 
 /**
- * @brief 运行中更新时间：只重写数字，不清屏
+ * @brief 运行中更新时间 + 编码器速度
  */
 static void Running_Show_Time(uint32_t elapsed_ms)
 {
 	Format_Time(elapsed_ms);
 	OLED_ShowString(36, 2, s_time_buf, 16);
+
+	/* 刷新编码器速度（带正负号，OLED_ShowNum 只接受无符号数） */
+	{
+		int32_t spd;
+		uint8_t sign;
+
+		spd  = (int32_t)Motor_GetFilteredSpeed1();
+		sign = (spd >= 0) ? '+' : '-';
+		if (spd < 0) spd = -spd;
+		OLED_ShowChar(16, 4, sign, 8);
+		OLED_ShowNum(24, 4, (uint32_t)spd, 4, 8);
+
+		spd  = (int32_t)Motor_GetFilteredSpeed2();
+		sign = (spd >= 0) ? '+' : '-';
+		if (spd < 0) spd = -spd;
+		OLED_ShowChar(16, 5, sign, 8);
+		OLED_ShowNum(24, 5, (uint32_t)spd, 4, 8);
+	}
+
+	/* FF 调试：加速度 (cm/s²) + 倾角 (0.1°) */
+	{
+		int32_t val;
+		uint8_t sign;
+
+		val  = (int32_t)(s_ff_accel * 100.0f);  // m/s² → cm/s²
+		sign = (val >= 0) ? '+' : '-';
+		if (val < 0) val = -val;
+		OLED_ShowChar(76, 4, sign, 8);
+		OLED_ShowNum(84, 4, (uint32_t)val, 3, 8);
+
+		val  = (int32_t)(s_ff_angle * 10.0f);   // ° → 0.1°
+		sign = (val >= 0) ? '+' : '-';
+		if (val < 0) val = -val;
+		OLED_ShowChar(76, 5, sign, 8);
+		OLED_ShowNum(84, 5, (uint32_t)val, 3, 8);
+	}
 }
 
 static void Oled_Refresh(void)
@@ -280,6 +341,104 @@ static void Remote_Update(void)
 	              * REMOTE_MAX_SPEED_MM_S / 100.0f;
 
 	Motor_SetSpeedLR(left_speed, right_speed);
+}
+
+/* ========== 底盘加速度前馈 ========== */
+
+/**
+ * @brief 底盘加速度前馈 — 纯编码器反馈，直接驱动摆杆（无需 Pi）
+ *
+ * 每循迹周期调用一次。用编码器速度差分估计加速度，
+ * 低通滤波后直接设摆杆倾角补偿惯性力。
+ *
+ * 可调参数（balance_config.h）：
+ *   FF_ACCEL_GAIN       — 惯性补偿增益 (°/m/s²)，默认 5.8
+ *   FF_ACCEL_DEADZONE   — 加速度死区 (m/s²)，低于此值摆杆回水平
+ *   FF_ACCEL_FILTER     — 加速度低通系数，越大越灵敏但越抖
+ *   BALANCE_MAX_ANGLE_DEG — 摆杆最大倾角安全限幅
+ */
+/**
+ * @brief 底盘加速度前馈 — 纯编码器反馈，直接驱动摆杆（无需 Pi）
+ *
+ * 每 ~20ms 计算一次：编码器速度差分 → 低通滤波 → 摆杆倾角补偿。
+ * 车加速/减速时摆杆反向倾斜抵消球的惯性力；匀速或静止时摆杆回水平。
+ *
+ * 可调参数（balance_config.h）：
+ *   FF_ACCEL_GAIN       — 补偿增益 (°/m/s²)
+ *   FF_ACCEL_DEADZONE   — 加速度死区 (m/s²)
+ *   FF_ACCEL_FILTER     — 低通系数，已内置较快衰减（加速快响应，减速快回零）
+ */
+static void ChassisFF_Update(void)
+{
+	uint32_t now = Board_GetTickMs();
+
+	/* 与编码器更新频率对齐（50Hz PIT → ~20ms） */
+	if (now - s_last_ff_ms < 20)
+		return;
+
+	float speed_now = (Motor_GetFilteredSpeed1() + Motor_GetFilteredSpeed2()) * 0.5f;
+	float accel_raw = 0.0f;
+	float ff_angle;
+
+	if (s_last_ff_ms > 0)
+	{
+		float dt_s = (float)(now - s_last_ff_ms) * 0.001f;
+		if (dt_s > 0.001f)
+		{
+			accel_raw = (speed_now - s_last_chassis_speed) / dt_s * 0.001f;
+		}
+	}
+
+	s_last_chassis_speed = speed_now;
+	s_last_ff_ms = now;
+
+	/* 非对称低通：加速阶段用 FF_ACCEL_FILTER，减速/匀速阶段快速衰减 */
+	static float accel_filtered = 0.0f;
+	float decay = (accel_raw * accel_filtered >= 0.0f)  /* 同号=加速中 */
+	              ? (1.0f - FF_ACCEL_FILTER)              /* 正常衰减 */
+	              : (1.0f - FF_ACCEL_FILTER * 3.0f);     /* 异号=回零中，3倍速衰减 */
+	if (decay < 0.0f) decay = 0.0f;  /* 防止衰减系数为负 */
+
+	accel_filtered = accel_filtered * decay + accel_raw * FF_ACCEL_FILTER;
+
+	s_ff_accel = accel_filtered;
+
+	/* 速度接近 0 → 强制回平衡位 */
+	if (speed_now > -20.0f && speed_now < 20.0f && accel_raw > -0.5f && accel_raw < 0.5f)
+	{
+		accel_filtered = 0.0f;
+		s_ff_accel = 0.0f;
+		s_ff_angle = 0.0f;
+		ff_angle = BALANCE_HOME_OFFSET_DEG;
+		goto ff_apply;
+	}
+
+	/* 死区 → 回平衡位 */
+	if (accel_filtered > -FF_ACCEL_DEADZONE && accel_filtered < FF_ACCEL_DEADZONE)
+	{
+		s_ff_angle = 0.0f;
+		ff_angle = BALANCE_HOME_OFFSET_DEG;
+		goto ff_apply;
+	}
+
+	/* 惯性补偿：平衡位 + FF 偏移 */
+	ff_angle = BALANCE_HOME_OFFSET_DEG + accel_filtered * FF_ACCEL_GAIN;
+	s_ff_angle = ff_angle;
+
+ff_apply:
+	/* 绝对位置控制：直接定位到目标角度，不依赖相对运动累积 */
+	{
+		int32_t target_pulses = (int32_t)(ff_angle * BALANCE_PULSE_PER_DEG);
+		uint8_t dir;
+		uint32_t clk;
+
+		if (target_pulses >= 0) { dir = 0; clk = (uint32_t)target_pulses; }
+		else                     { dir = 1; clk = (uint32_t)(-target_pulses); }
+
+		ZDT_Motor_Pos_Control(BALANCE_MOTOR_ID, dir,
+		                      BALANCE_WORK_VEL, 5,
+		                      clk, 1, false);
+	}
 }
 
 /* ========== 主函数 ========== */
@@ -350,6 +509,8 @@ int main(void)
 				else
 				{
 					Tracking_Start();
+					s_last_chassis_speed = 0.0f;
+					s_last_ff_ms         = 0;
 				}
 
 				s_state      = STATE_RUNNING;
@@ -405,10 +566,17 @@ int main(void)
 
 		switch (s_selected_task)
 		{
-		case TASK_TRACK_ONLY:
 		case TASK_TRACK_BAL_AB:
 		case TASK_TRACK_BAL_LAP_O:
 		case TASK_TRACK_BAL_LAP_X:
+			{
+				uint8_t mask = Grayscale_ReadAll();
+				Tracking_Update(Board_GetTickMs(), mask);
+				ChassisFF_Update();
+			}
+			break;
+
+		case TASK_TRACK_ONLY:
 			{
 				uint8_t mask = Grayscale_ReadAll();
 				Tracking_Update(Board_GetTickMs(), mask);
