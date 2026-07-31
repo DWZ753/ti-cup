@@ -42,8 +42,9 @@
  */
 #define BALANCE_HOME_OFFSET_DEG   -45.5f
 
-/* ========== 球位置 PD ========== */
+/* ========== 球位置 PID（标准位置式，modules/algorithm/pid） ========== */
 
+<<<<<<< HEAD
 /* °/mm，位置误差→倾角 */
 #define BALANCE_KP                0.03f
 
@@ -111,6 +112,30 @@
 /* ========== 低通滤波器 ========== */
 
 #define POS_FILTER_ALPHA          0.35f
+=======
+/*
+ * PID 公式（PID_Compute 内部，~50Hz 固定周期调用）：
+ *   error  = target - ball_pos          (mm)
+ *   P_out  = KP × error                 (°)
+ *   I_out  = KI × Σ(error)              (°)，Σ 限幅 integral_limit
+ *   D_out  = KD × (e - 2·e₁ + e₂)      (°)，二阶差分 = 加速度阻尼
+ *   output = P + I + D                  (°)，限幅 MAX_ANGLE_DEG
+ *
+ * 注意 KI/KD 不含 dt！与旧手写 PID 的参数不可直接对比。
+ *   - KI 等效 ≈ 旧KI × dt（旧 0.15×0.02=0.003）
+ *   - KD 等效 ≈ 旧KD × dt（旧 0.50×0.02=0.010）
+ *   D 项从速度阻尼变为加速度阻尼，对噪声更不敏感。
+ */
+
+/* °/mm */
+#define BALANCE_KP                    0.40f
+/* °/(mm·sample)，积分增益 */
+#define BALANCE_KI                    0.005f
+/* °/(mm/sample²)，微分增益（加速度阻尼） */
+#define BALANCE_KD                    0.010f
+/* mm·sample，积分限幅（Σerror 上限，Ki×limit = I输出上限°） */
+#define BALANCE_PID_INTEGRAL_LIMIT    1000.0f
+>>>>>>> f978f42be76382ac9f7c8c321f9f48e7c114aadb
 
 /* ========== 底盘前馈 ========== */
 
@@ -128,8 +153,41 @@
 /* 加速度低通系数（0~1）：越大越灵敏但越抖 */
 #define FF_ACCEL_FILTER           0.5f
 
+<<<<<<< HEAD
 /* ========== 通信 ========== */
 
 #define PI_TIMEOUT_MS             200
+=======
+/* ========== 低通滤波器 ========== */
+
+/*
+ * 一阶低通: out = out·(1-α) + in·α
+ *   α → 0: 强滤波，响应慢，滞后大（如 0.1~0.3）
+ *   α → 1: 弱滤波/直通，响应快，噪声大
+ *   α = 1.0: 完全直通，无滤波（调试时用）
+ */
+#define POS_FILTER_ALPHA          1.0f   // 位置低通（1.0=直通）
+
+/* ========== 通信 ========== */
+
+#define PI_TIMEOUT_MS             200    // 超时判丢球
+
+/* ========== 静态平衡序列（要求3，闭环位置控制） ========== */
+
+/*
+ * 各阶段：{球目标位置(mm), 到达后停留(ms)}。
+ * 球到达目标 ± SEQ_THRESHOLD 后开始停留计时，到时推进下一步。
+ * 全部步骤完成后自动结束。正=右，负=左。
+ */
+#define STATIC_SEQ_LEN            2
+
+#define STATIC_SEQ_TARGET_0       50.0f   // +5cm
+#define STATIC_SEQ_DWELL_0        1000
+#define STATIC_SEQ_TARGET_1       -50.0f  // -5cm
+#define STATIC_SEQ_DWELL_1        1000
+
+/* 球到达目标判定阈值 (mm) */
+#define BALANCE_SEQ_THRESHOLD_MM   10.0f
+>>>>>>> f978f42be76382ac9f7c8c321f9f48e7c114aadb
 
 #endif /* __BALANCE_CONFIG_H__ */

@@ -39,6 +39,25 @@ void Balance_Init(void);
 void Balance_SetTarget(float pos_mm);
 
 /**
+ * @brief 查询当前球目标位置
+ * @return 球目标位置 (mm)
+ */
+float Balance_GetTarget(void);
+
+/**
+ * @brief 查询 I 项积分器当前值
+ * @return I 项累积值 (°)
+ */
+float Balance_GetIAccum(void);
+
+/**
+ * @brief 查询 P/D 项当前值（调试用）
+ * @return P 项 / D 项 (°)
+ */
+float Balance_GetP(void);
+float Balance_GetD(void);
+
+/**
  * @brief 球位置更新入口（Pi @50Hz 调用）
  * @param ball_pos_mm  球当前位置 (mm)
  * @param ball_vel_mm_s 球当前速度 (mm/s)

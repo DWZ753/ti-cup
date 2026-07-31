@@ -229,82 +229,91 @@ static void Running_Show_First(void)
 {
 	OLED_Clear();
 	OLED_ShowString(0, 0, s_task_names[s_selected_task], 8);
+	OLED_ShowString(0, 1, (uint8_t*)"Tgt:", 8);
 	OLED_ShowString(0, 7, (uint8_t*)"K2:Stop", 8);
 
 	Format_Time(0);
 	/* 16px 大字居中: 7 字符 x 8px = 56px, (128-56)/2 = 36 */
 	OLED_ShowString(36, 2, s_time_buf, 16);
 
-	/* 编码器测速 + FF 调试 */
-	OLED_ShowString(0, 4, (uint8_t*)"L:", 8);
-	OLED_ShowString(0, 5, (uint8_t*)"R:", 8);
-	OLED_ShowString(64, 4, (uint8_t*)"a:", 8);
-	OLED_ShowString(64, 5, (uint8_t*)"F:", 8);
-	OLED_ShowString(0, 6, (uint8_t*)"Pi:", 8);
+	/* FF 调试 + PID 分量 */
+	OLED_ShowString(0, 4, (uint8_t*)"a:", 8);
+	OLED_ShowString(64, 4, (uint8_t*)"F:", 8);
+	OLED_ShowString(0, 5, (uint8_t*)"P:", 8);
+	OLED_ShowString(64, 5, (uint8_t*)"D:", 8);
+	OLED_ShowString(0, 6, (uint8_t*)"I:", 8);
 }
 
 /**
- * @brief 运行中更新时间 + 编码器速度
+ * @brief 运行中刷新 OLED：时间、FF、I 项、目标位置、Pi 位置
  */
 static void Running_Show_Time(uint32_t elapsed_ms)
 {
 	Format_Time(elapsed_ms);
 	OLED_ShowString(36, 2, s_time_buf, 16);
 
-	/* 刷新编码器速度（带正负号，OLED_ShowNum 只接受无符号数） */
-	{
-		int32_t spd;
-		uint8_t sign;
-
-		spd  = (int32_t)Motor_GetFilteredSpeed1();
-		sign = (spd >= 0) ? '+' : '-';
-		if (spd < 0) spd = -spd;
-		OLED_ShowChar(16, 4, sign, 8);
-		OLED_ShowNum(24, 4, (uint32_t)spd, 4, 8);
-
-		spd  = (int32_t)Motor_GetFilteredSpeed2();
-		sign = (spd >= 0) ? '+' : '-';
-		if (spd < 0) spd = -spd;
-		OLED_ShowChar(16, 5, sign, 8);
-		OLED_ShowNum(24, 5, (uint32_t)spd, 4, 8);
-	}
-
-	/* FF 调试：加速度 (cm/s²) + 倾角 (0.1°) */
+	/* FF + PID 分量 */
 	{
 		int32_t val;
 		uint8_t sign;
 
-		val  = (int32_t)(s_ff_accel * 100.0f);  // m/s² → cm/s²
+		/* 加速度 (cm/s²) */
+		val  = (int32_t)(s_ff_accel * 100.0f);
+		sign = (val >= 0) ? '+' : '-';
+		if (val < 0) val = -val;
+		OLED_ShowChar(16, 4, sign, 8);
+		OLED_ShowNum(24, 4, (uint32_t)val, 3, 8);
+
+		/* FF 倾角 (0.1°) */
+		val  = (int32_t)(s_ff_angle * 10.0f);
 		sign = (val >= 0) ? '+' : '-';
 		if (val < 0) val = -val;
 		OLED_ShowChar(76, 4, sign, 8);
 		OLED_ShowNum(84, 4, (uint32_t)val, 3, 8);
 
-		val  = (int32_t)(s_ff_angle * 10.0f);   // ° → 0.1°
+		/* P 项 (0.1°) */
+		val  = (int32_t)(Balance_GetP() * 10.0f);
 		sign = (val >= 0) ? '+' : '-';
 		if (val < 0) val = -val;
-		OLED_ShowChar(76, 5, sign, 8);
-		OLED_ShowNum(84, 5, (uint32_t)val, 3, 8);
+		OLED_ShowChar(16, 5, sign, 8);
+		OLED_ShowNum(24, 5, (uint32_t)val, 3, 8);
+
+		/* D 项 (0.1°) */
+		val  = (int32_t)(Balance_GetD() * 10.0f);
+		sign = (val >= 0) ? '+' : '-';
+		if (val < 0) val = -val;
+		OLED_ShowChar(80, 5, sign, 8);
+		OLED_ShowNum(88, 5, (uint32_t)val, 3, 8);
+
+		/* I 项 (0.01°) */
+		val  = (int32_t)(Balance_GetIAccum() * 100.0f);
+		sign = (val >= 0) ? '+' : '-';
+		if (val < 0) val = -val;
+		OLED_ShowChar(16, 6, sign, 8);
+		OLED_ShowNum(24, 6, (uint32_t)val, 4, 8);
 	}
-		/* Pi 球位置调试 */
+		/* 目标位置 */
+		{
+			int32_t tgt = (int32_t)Balance_GetTarget();
+			uint8_t sign;
+
+			sign = (tgt >= 0) ? '+' : '-';
+			if (tgt < 0) tgt = -tgt;
+			OLED_ShowChar(32, 1, sign, 8);
+			OLED_ShowNum(40, 1, (uint32_t)tgt, 4, 8);
+			OLED_ShowString(72, 1, (uint8_t*)"mm", 8);
+		}
+
+			/* Pi 球位置调试 */
 		{
 		int32_t pos = (int32_t)s_debug_ball_pos;
 		uint8_t sign;
-		uint32_t age_ms;
 
 		sign = (pos >= 0) ? '+' : '-';
 		if (pos < 0) pos = -pos;
-		OLED_ShowChar(24, 6, sign, 8);
-		OLED_ShowNum(32, 6, (uint32_t)pos, 4, 8);
-		OLED_ShowString(64, 6, (uint8_t*)"mm", 8);
-		OLED_ShowChar(88, 6, 'C', 8);
-		OLED_ShowChar(96, 6, '0' + s_debug_ball_conf, 8);
-
-		/* 诊断：距上次 Pi 帧的毫秒数，>500ms = 链路断 */
-		age_ms = Board_GetTickMs() - s_rc_last_ms;
-		if (age_ms > 999) age_ms = 999;
-		OLED_ShowChar(104, 6, 'D', 8);
-		OLED_ShowNum(112, 6, age_ms, 3, 8);
+		OLED_ShowChar(64, 6, sign, 8);
+		OLED_ShowNum(72, 6, (uint32_t)pos, 4, 8);
+		OLED_ShowString(104, 6, (uint8_t*)"mm", 8);
 	}
 }
 
@@ -417,10 +426,69 @@ static void ChassisFF_Update(void)
 
 	s_ff_accel = accel_filtered;
 
+<<<<<<< HEAD
 	/* 统一走 Balance_ChassisFF → Balance_Update 叠加输出。
 	   Pi 在线/离线都走同一路径：加速度估计 → FF 累加器 → PD 输出。 */
 	Balance_ChassisFF(accel_filtered);
 	s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
+=======
+	/*
+	 * Pi 闭环模式：加速度馈入 Balance_Update() 的 FF 累加器，
+	 * 由 PD 控制律统一输出 QPos_Control。
+	 * Pi 离线时退回开环 Pos_Control 直接驱动。
+	 */
+	if (Board_GetTickMs() - s_rc_last_ms < PI_TIMEOUT_MS)
+	{
+		Balance_ChassisFF(accel_filtered);
+		s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
+		return;
+	}
+
+	/* ---- 开环：直接 Pos_Control（无 Pi 时） ---- */
+
+	/* 速度接近 0 → 强制回平衡位 */
+	if (speed_now > -20.0f && speed_now < 20.0f && accel_raw > -0.5f && accel_raw < 0.5f)
+	{
+		accel_filtered = 0.0f;
+		s_ff_accel = 0.0f;
+		s_ff_angle = 0.0f;
+		ff_angle = BALANCE_HOME_OFFSET_DEG;  /* 电机坐标水平位 */
+		goto ff_apply;
+	}
+
+	/* 死区 → 回平衡位 */
+	if (accel_filtered > -FF_ACCEL_DEADZONE && accel_filtered < FF_ACCEL_DEADZONE)
+	{
+		s_ff_angle = 0.0f;
+		ff_angle = BALANCE_HOME_OFFSET_DEG;  /* 电机坐标水平位 */
+		goto ff_apply;
+	}
+
+	/* 惯性补偿：平衡位 + FF 偏移 */
+	s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
+	ff_angle = BALANCE_HOME_OFFSET_DEG + s_ff_angle;  /* 水平位+FF偏移 */
+	/* 钳位：水平位 ± MAX_ANGLE */
+	if (ff_angle > BALANCE_HOME_OFFSET_DEG + BALANCE_MAX_ANGLE_DEG)
+		ff_angle = BALANCE_HOME_OFFSET_DEG + BALANCE_MAX_ANGLE_DEG;
+	else if (ff_angle < BALANCE_HOME_OFFSET_DEG - BALANCE_MAX_ANGLE_DEG)
+		ff_angle = BALANCE_HOME_OFFSET_DEG - BALANCE_MAX_ANGLE_DEG;
+
+
+ff_apply:
+	/* 绝对位置控制：直接定位到目标角度，不依赖相对运动累积 */
+	{
+		int32_t target_pulses = (int32_t)(ff_angle * BALANCE_PULSE_PER_DEG);
+		uint8_t dir;
+		uint32_t clk;
+
+		if (target_pulses >= 0) { dir = 0; clk = (uint32_t)target_pulses; }
+		else                     { dir = 1; clk = (uint32_t)(-target_pulses); }
+
+		ZDT_Motor_Pos_Control(BALANCE_MOTOR_ID, dir,
+		                      BALANCE_WORK_VEL, 5,
+		                      clk, 1, false);
+	}
+>>>>>>> f978f42be76382ac9f7c8c321f9f48e7c114aadb
 }
 
 /* ========== 主函数 ========== */
