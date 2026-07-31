@@ -13,13 +13,25 @@
 #define BALANCE_WORK_VEL          200                  // 工作转速(RPM)
 #define BALANCE_MAX_ANGLE_DEG     10.0f                // 摆杆最大倾角(°)
 
-/* 合页未到，跳过机械回零；设为 0 启用硬停回零 */
-#define BALANCE_SKIP_HOMING       1
+/* 暂时跳过回零，上电直接转 */
+#define BALANCE_SKIP_HOMING       0
 
-/* 硬停回零参数（BALANCE_SKIP_HOMING=0 时生效） */
+/* 硬停回零参数 */
 #define BALANCE_ZERO_VEL          30
-#define BALANCE_ZERO_CUR_MA       500
-#define BALANCE_ZERO_TIME_MS      50
+#define BALANCE_ZERO_CUR_MA       800   // 堵转检测电流(mA)，太低会误触发
+#define BALANCE_ZERO_TIME_MS      100   // 堵转检测时间(ms)，太短会启动误触发
+#define BALANCE_ZERO_DIR          1     // 回零方向: 0=CW, 1=CCW（先试往上碰限位）
+
+/* 过流保护（驱动板硬件 OCP，须在使能前设置） */
+#define BALANCE_OCP_MA            800   // OCP 阈值(mA)
+#define BALANCE_OCP_TIME_MS       200   // OCP 触发时间(ms)
+
+/**
+ * 回零后摆杆从地面抬起到水平位置的偏移角度 (°)。
+ * 正值 = 上抬，负值 = 下压。
+ * ⚠️ 必须实测标定：先设 -25°. CCW方向（回零反方向），上电看是否水平，再微调。
+ */
+#define BALANCE_HOME_OFFSET_DEG   -60.0f
 
 /* ========== 球位置 PD ========== */
 

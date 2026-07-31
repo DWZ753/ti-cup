@@ -182,7 +182,12 @@ Pi 每 20ms 发 `CMD_BALL_POS` → MCU 调 `Balance_Update()` → PD 实时计�
 | `BALANCE_MOTOR_ID` | 1 | ZDT 电机地址 |
 | `BALANCE_WORK_VEL` | 200 | 工作转速 (RPM) |
 | `BALANCE_MAX_ANGLE_DEG` | 10.0 | 摆杆最大倾角 (°)，安全限幅 |
-| `BALANCE_SKIP_HOMING` | 1 | 1=跳过回零(合页未到)，0=硬停回零 |
+| `BALANCE_SKIP_HOMING` | 0 | 0=硬停回零，1=跳过(合页未到时用) |
+| `BALANCE_ZERO_DIR` | 0 | 回零方向：0=CW下转碰地，1=CCW（首次上电实测） |
+| `BALANCE_HOME_OFFSET_DEG` | 25.0 | 回零后上抬到水平的偏移角度(°)，⚠️ 必须实测标定 |
+| `BALANCE_ZERO_VEL` | 30 | 回零速度 (RPM) |
+| `BALANCE_ZERO_CUR_MA` | 500 | 回零碰撞检测电流 (mA) |
+| `BALANCE_ZERO_TIME_MS` | 50 | 回零碰撞检测时间 (ms) |
 
 ### PD 参数
 
@@ -208,11 +213,13 @@ Pi 每 20ms 发 `CMD_BALL_POS` → MCU 调 `Balance_Update()` → PD 实时计�
 
 ## 六、调参步骤
 
-### 第 0 步：确认机械参数（合页到后）
+### 第 0 步：确认机械参数（合页到后首次上电）
 
-1. `BALANCE_SKIP_HOMING` 改为 `0`
-2. 上电看回零方向——电机应往下转碰地。方向反了改 `o_dir` 参数（在 `Balance_Init()` 的 `Origin_Modify_Params` 调用中，0→1 或 1→0）
-3. 遥控 `CMD_BEAM` 正负号验证：正值摆杆右倾→球往右滚。反了就把 `BALANCE_PULSE_PER_DEG` 加负号（或改 `delta_deg` 的符号）
+1. 确认 `BALANCE_SKIP_HOMING = 0`、`BALANCE_HOME_OFFSET_DEG = 25.0`
+2. 上电 → 电机下转碰地 → 电流尖峰 → 自动停止 → 上抬 25°
+3. 如果电机**上转**而不是下转 → 改 `BALANCE_ZERO_DIR`（0→1 或 1→0）
+4. 上抬后摆杆不够水平 → 加大 `BALANCE_HOME_OFFSET_DEG`；太高 → 减小。反复几次直到肉眼水平
+5. 遥控 `CMD_BEAM` 正负验证：正值摆杆右倾→球往右滚。反了就把 `BALANCE_PULSE_PER_DEG` 改成负值
 
 ### 第 1 步：静态开环调时序（要求 3，车不动）
 

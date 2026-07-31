@@ -81,6 +81,13 @@ static void Set_Angle(float angle_deg)
 void Balance_Init(void)
 {
 	/*
+	 * 0. 等待电机驱动板上电完成
+	 *    MCU 启动比驱动板快，不发这个等会导致命令丢失，
+	 *    表现为上电后必须按 MCU Reset 才执行。
+	 */
+	delay_ms(1500);
+
+	/*
 	 * 1. ZDT 电机通信初始化
 	 *    内部 UART 自注册 + 500ms 等待驱动板启动
 	 */
@@ -100,13 +107,18 @@ void Balance_Init(void)
 	 */
 	ZDT_Motor_Origin_Modify_Params(BALANCE_MOTOR_ID, false,
 	                               2,                  /* o_mode */
-	                               0,                  /* o_dir 待实测 */
+	                               BALANCE_ZERO_DIR,   /* o_dir */
 	                               BALANCE_ZERO_VEL,
 	                               10000,              /* 10s 超时 */
 	                               BALANCE_ZERO_VEL,
 	                               BALANCE_ZERO_CUR_MA,
 	                               BALANCE_ZERO_TIME_MS,
 	                               false);             /* 不上电自动回零 */
+		/* 配置过流保护（不存储到 flash，须在使能前设置） */
+		ZDT_Motor_Modify_Otocp(BALANCE_MOTOR_ID, false,
+		                       100,               /* otp = 100°C */
+		                       BALANCE_OCP_MA,
+		                       BALANCE_OCP_TIME_MS);
 
 	ZDT_Motor_En_Control(BALANCE_MOTOR_ID, true, false);
 	delay_ms(50);
@@ -115,6 +127,12 @@ void Balance_Init(void)
 	ZDT_Motor_Origin_Trigger_Return(BALANCE_MOTOR_ID, 2, false);
 	delay_ms(3000);
 	ZDT_Motor_Reset_CurPos_To_Zero(BALANCE_MOTOR_ID);
+
+		/* 回零后重新使能，确保退出回零状态 */
+		ZDT_Motor_En_Control(BALANCE_MOTOR_ID, false, false);
+		delay_ms(50);
+		ZDT_Motor_En_Control(BALANCE_MOTOR_ID, true, false);
+		delay_ms(100);
 #endif
 
 	/*
@@ -127,7 +145,27 @@ void Balance_Init(void)
 	                          0,     /* raF = 相对上次目标 */
 	                          false);
 
-	/* 3. 初始化内部状态 */
+	/*
+	 * 3. 回零后上抬到水平位置
+	 *    回零时摆杆碰地/硬停 → motor pos=0。
+	 *    水平位置在零点上方 BALANCE_HOME_OFFSET_DEG 度。
+	 *    首次安装后实测：逐步加大此值直到摆杆肉眼水平。
+	 */
+	if (BALANCE_HOME_OFFSET_DEG != 0.0f)
+	{
+		int32_t pulses;
+
+		pulses = (int32_t)(BALANCE_HOME_OFFSET_DEG
+		                   * BALANCE_PULSE_PER_DEG);
+		if (pulses != 0)
+		{
+			delay_ms(100);  // 等 QPos 参数生效
+			ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, pulses);
+			delay_ms(1000);
+		}
+	}
+
+	/* 4. 初始化内部状态（此时 s_angle=0 表示水平位置） */
 	s_angle          = 0.0f;
 	s_target_pos     = 0.0f;
 	s_ball_pos       = 0.0f;
