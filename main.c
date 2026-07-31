@@ -373,27 +373,15 @@ static void Remote_Update(void)
 /* ========== 底盘加速度前馈 ========== */
 
 /**
- * @brief 底盘加速度前馈 — 纯编码器反馈，直接驱动摆杆（无需 Pi）
+ * @brief 底盘加速度前馈 — 编码器反馈估计加速度，馈入 balance 模块
  *
- * 每循迹周期调用一次。用编码器速度差分估计加速度，
- * 低通滤波后直接设摆杆倾角补偿惯性力。
- *
- * 可调参数（balance_config.h）：
- *   FF_ACCEL_GAIN       — 惯性补偿增益 (°/m/s²)，默认 5.8
- *   FF_ACCEL_DEADZONE   — 加速度死区 (m/s²)，低于此值摆杆回水平
- *   FF_ACCEL_FILTER     — 加速度低通系数，越大越灵敏但越抖
- *   BALANCE_MAX_ANGLE_DEG — 摆杆最大倾角安全限幅
- */
-/**
- * @brief 底盘加速度前馈 — 纯编码器反馈，直接驱动摆杆（无需 Pi）
- *
- * 每 ~20ms 计算一次：编码器速度差分 → 低通滤波 → 摆杆倾角补偿。
- * 车加速/减速时摆杆反向倾斜抵消球的惯性力；匀速或静止时摆杆回水平。
+ * 每 ~20ms 计算一次：编码器速度差分 → 低通滤波 → Balance_ChassisFF()。
+ * 车加速/减速时摆杆反向倾斜抵消球的惯性力。
  *
  * 可调参数（balance_config.h）：
  *   FF_ACCEL_GAIN       — 补偿增益 (°/m/s²)
  *   FF_ACCEL_DEADZONE   — 加速度死区 (m/s²)
- *   FF_ACCEL_FILTER     — 低通系数，已内置较快衰减（加速快响应，减速快回零）
+ *   FF_ACCEL_FILTER     — 低通系数
  */
 static void ChassisFF_Update(void)
 {
@@ -405,7 +393,6 @@ static void ChassisFF_Update(void)
 
 	float speed_now = (Motor_GetFilteredSpeed1() + Motor_GetFilteredSpeed2()) * 0.5f;
 	float accel_raw = 0.0f;
-	float ff_angle;
 
 	if (s_last_ff_ms > 0)
 	{
@@ -430,62 +417,10 @@ static void ChassisFF_Update(void)
 
 	s_ff_accel = accel_filtered;
 
-	/*
-	 * Pi 闭环模式：加速度馈入 Balance_Update() 的 FF 累加器，
-	 * 由 PD 控制律统一输出 QPos_Control。
-	 * Pi 离线时退回开环 Pos_Control 直接驱动。
-	 */
-	if (Board_GetTickMs() - s_rc_last_ms < PI_TIMEOUT_MS)
-	{
-		Balance_ChassisFF(accel_filtered);
-		s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
-		return;
-	}
-
-	/* ---- 开环：直接 Pos_Control（无 Pi 时） ---- */
-
-	/* 速度接近 0 → 强制回平衡位 */
-	if (speed_now > -20.0f && speed_now < 20.0f && accel_raw > -0.5f && accel_raw < 0.5f)
-	{
-		accel_filtered = 0.0f;
-		s_ff_accel = 0.0f;
-		s_ff_angle = 0.0f;
-		ff_angle = 0.0f;  /* 0°=平衡位 */
-		goto ff_apply;
-	}
-
-	/* 死区 → 回平衡位 */
-	if (accel_filtered > -FF_ACCEL_DEADZONE && accel_filtered < FF_ACCEL_DEADZONE)
-	{
-		s_ff_angle = 0.0f;
-		ff_angle = 0.0f;  /* 0°=平衡位 */
-		goto ff_apply;
-	}
-
-	/* 惯性补偿：平衡位 + FF 偏移 */
-	ff_angle = accel_filtered * FF_ACCEL_GAIN;  /* 0°=平衡位 */
-	s_ff_angle = ff_angle;
-	/* 钳位 ±BALANCE_MAX_ANGLE_DEG */
-	if (ff_angle > BALANCE_MAX_ANGLE_DEG)
-		ff_angle = BALANCE_MAX_ANGLE_DEG;
-	else if (ff_angle < -BALANCE_MAX_ANGLE_DEG)
-		ff_angle = -BALANCE_MAX_ANGLE_DEG;
-
-
-ff_apply:
-	/* 绝对位置控制：直接定位到目标角度，不依赖相对运动累积 */
-	{
-		int32_t target_pulses = (int32_t)(ff_angle * BALANCE_PULSE_PER_DEG);
-		uint8_t dir;
-		uint32_t clk;
-
-		if (target_pulses >= 0) { dir = 0; clk = (uint32_t)target_pulses; }
-		else                     { dir = 1; clk = (uint32_t)(-target_pulses); }
-
-		ZDT_Motor_Pos_Control(BALANCE_MOTOR_ID, dir,
-		                      BALANCE_WORK_VEL, 5,
-		                      clk, 1, false);
-	}
+	/* 统一走 Balance_ChassisFF → Balance_Update 叠加输出。
+	   Pi 在线/离线都走同一路径：加速度估计 → FF 累加器 → PD 输出。 */
+	Balance_ChassisFF(accel_filtered);
+	s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
 }
 
 /* ========== 主函数 ========== */
@@ -549,16 +484,12 @@ int main(void)
 				s_start_ms     = Board_GetTickMs();
 				s_last_oled_ms = 0;
 
-				if (s_selected_task == TASK_BAL_STATIC)
-				{
-					Balance_Start();
-				}
-				else
-				{
-					Tracking_Start();
-					s_last_chassis_speed = 0.0f;
-					s_last_ff_ms         = 0;
-				}
+			if (s_selected_task != TASK_BAL_STATIC)
+			{
+				Tracking_Start();
+				s_last_chassis_speed = 0.0f;
+				s_last_ff_ms         = 0;
+			}
 
 				s_state      = STATE_RUNNING;
 				s_oled_dirty = true;
@@ -583,11 +514,6 @@ int main(void)
 				}
 
 				/* 自动停止检测 */
-				if (s_selected_task == TASK_BAL_STATIC)
-				{
-					if (Balance_IsDone())
-						stopped = true;
-				}
 				else if (s_selected_task != TASK_REMOTE)
 				{
 					if (!Tracking_IsRunning())
@@ -631,10 +557,9 @@ int main(void)
 			break;
 
 		case TASK_BAL_STATIC:
-			Balance_SeqUpdate();
-			break;
+				break;
 
-		case TASK_REMOTE:
+			case TASK_REMOTE:
 			Remote_Update();
 			break;
 		}

@@ -6,13 +6,10 @@
  * 依赖 ZDT 闭环步进电机驱动摆杆。
  *
  * 使用方式：
- *   1. Board_Init() → Balance_Init()  上电初始化
+ *   1. Board_Init() → Balance_Init()  上电初始化（含回零+调平）
  *   2. Balance_SetTarget(0)           设球目标位置（0 = O 点）
  *   3. Balance_Update(pos, vel, conf) 每收到 Pi 球位置时调用（50Hz）
  *   4. Balance_ChassisFF(accel)       每循迹周期调用底盘前馈
- *
- * 静态平衡（要求 3）：
- *   调用 Balance_Start() 启动，主循环中周期性调用 Balance_SeqUpdate()。
  */
 
 #ifndef __BALANCE_H__
@@ -70,27 +67,8 @@ float Balance_GetAngle(void);
 void Balance_SetAngle(float angle_deg);
 
 /**
- * @brief 启动静态平衡序列（要求 3）
- * @note  车静止，执行球 O→+5cm→-5cm 开环时序
- */
-void Balance_Start(void);
-
-/**
  * @brief 停止平衡控制，摆杆回水平
  */
 void Balance_Stop(void);
-
-/**
- * @brief 静态平衡序列状态机 — 每主循环周期调用一次
- * @note  内部按时间推进序列步骤，完成后自动回水平
- */
-void Balance_SeqUpdate(void);
-
-/**
- * @brief 查询静态平衡序列是否执行完毕
- * @retval true  序列完成
- * @retval false 执行中或未启动
- */
-bool Balance_IsDone(void);
 
 #endif /* __BALANCE_H__ */

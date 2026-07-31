@@ -2,11 +2,13 @@
  * @file    balance.c
  * @brief   球-梁平衡控制模块实现
  *
- * 控制律（MCU 开发指引 §3.2）：
- *   angle_cmd = KP * pos_error + KD * ball_vel + chassis_FF
+ * 控制架构：
+ *   outer: ball_pos → PD(vel_window, brake_fade) → θ_cmd
+ *   inner: θ_cmd → ZDT QPos_Control 相对位移
  *
- * 依赖 ZDT 闭环步进电机控制摆杆倾角。
- * 合页未到时 BALANCE_SKIP_HOMING=1，跳过机械回零。
+ * 坐标系：电机零点在上限位，水平位置 = HOME_OFFSET_DEG。
+ * HOME_OFFSET 在 Set_Angle() 的 delta 计算中自然抵消，
+ * 运行时 delta_pulses = (new_angle - old_angle) * PULSE_PER_DEG。
  */
 
 #include "balance.h"
@@ -17,49 +19,55 @@
 
 /* ========== 内部状态 ========== */
 
-static float    s_angle;             // 当前摆杆倾角指令 (°)
-static float    s_target_pos;        // 球目标位置 (mm)
-static float    s_ball_pos;          // 低通后球位置 (mm)
-static float    s_ball_vel;          // 低通后球速度 (mm/s)
-static float    s_last_ball_pos;     // 上次球位置 (速度估计用)
-static float    s_ff_accel;          // 待叠加底盘 FF 倾角 (°)
-static uint32_t s_last_update_ms;    // 上次 Update() 时间戳
-	static float    s_i_accum;           // I 项积分器 (消除稳态偏置)
-	static float    s_last_dt;           // 上次 dt (I 项用)
-static uint8_t  s_confidence;        // 最近一次置信度
+/* 位置与速度 */
+static float    s_ball_pos;                     // 低通后球位置 (mm)
+static float    s_ball_vel;                     // 窗口速度 (mm/s)
+static float    s_pos_ring[VEL_WINDOW_SIZE];    // 位置环形缓冲
+static uint32_t s_time_ring[VEL_WINDOW_SIZE];   // 时间戳环形缓冲
+static uint8_t  s_ring_idx;                     // 当前写入位置
+static uint8_t  s_ring_count;                   // 已填充样本数
 
-/* ========== 静态平衡序列（要求 3） ========== */
+/* 控制输出 */
+static float    s_target_pos;                   // 目标位置 (mm)
+static float    s_angle_cmd;                    // 当前逻辑角度指令 (°)
+static float    s_i_accum;                      // I 项积分器
+static float    s_ff_accel;                     // 待叠加 FF 倾角 (°)
+static uint8_t  s_confidence;                   // 最近一次置信度
 
-static const struct {
-	float    angle_deg;
-	uint16_t duration_ms;
-} s_seq_table[] = {
-	{ STATIC_SEQ_ANGLE_0, STATIC_SEQ_TIME_0 },
-	{ STATIC_SEQ_ANGLE_1, STATIC_SEQ_TIME_1 },
-	{ STATIC_SEQ_ANGLE_2, STATIC_SEQ_TIME_2 },
-	{ STATIC_SEQ_ANGLE_3, STATIC_SEQ_TIME_3 },
-	{ STATIC_SEQ_ANGLE_4, STATIC_SEQ_TIME_4 },
-	{ STATIC_SEQ_ANGLE_5, STATIC_SEQ_TIME_5 },
-	{ STATIC_SEQ_ANGLE_6, STATIC_SEQ_TIME_6 },
-};
+/* 运动状态 */
+typedef enum {
+	MOTION_UNKNOWN,
+	MOTION_STATIONARY,
+	MOTION_ROLLING,
+} MotionState;
 
-#define S_SEQ_LEN  (sizeof(s_seq_table) / sizeof(s_seq_table[0]))
+static MotionState s_motion;                    // 当前运动状态
+static uint32_t    s_stationary_since_ms;       // 静止开始时间
+static float       s_stationary_start_pos;      // 静止起始位置
 
-static uint8_t  s_seq_step;
-static uint32_t s_seq_tick;
-static bool     s_seq_running;
-static bool     s_seq_done;
+/* 静止起动补偿 */
+static float    s_breakaway_boost;              // 当前起动补偿 (°)
+static float    s_breakaway_start_ms;           // 补偿开始时间
+static bool     s_breakaway_active;             // 补偿激活中
+static int8_t   s_breakaway_dir;                // 补偿方向 (+1/-1)
+
+/* 时间戳 */
+static uint32_t s_last_update_ms;
 
 /* ========== 内部控制 ========== */
 
 /**
- * @brief 设置摆杆倾角（含钳位 + ZDT QPos 相对运动发送）
- * @param angle_deg 目标倾角 (°)，正=右倾，负=左倾
+ * @brief 设置摆杆倾角 — 相对位移模式
+ * @param angle_deg 逻辑目标倾角 (°)，正=右倾，负=左倾，0=水平
+ * @note  使用 QPos_Control（相对位移），与 init 上抬动作一致。
+ *        避免 Pos_Control(raF=1) 和 QPos_Control 位置基准不一致的问题。
  */
 static void Set_Angle(float angle_deg)
 {
-	float   delta_deg;
-	int32_t delta_pulses;
+	float    motor_angle;
+	float    last_motor_angle;
+	float    delta_deg;
+	int32_t  delta_pulses;
 
 	/* 钳位 */
 	if (angle_deg > BALANCE_MAX_ANGLE_DEG)
@@ -67,15 +75,18 @@ static void Set_Angle(float angle_deg)
 	else if (angle_deg < -BALANCE_MAX_ANGLE_DEG)
 		angle_deg = -BALANCE_MAX_ANGLE_DEG;
 
-	/* QPos 相对上次目标运动 */
-	delta_deg    = angle_deg - s_angle;
-	delta_pulses = (int32_t)(delta_deg * BALANCE_PULSE_PER_DEG);
+	/* 逻辑角度 → 电机角度（叠加 HOME_OFFSET） */
+	motor_angle      = angle_deg       + BALANCE_HOME_OFFSET_DEG;
+	last_motor_angle = s_angle_cmd     + BALANCE_HOME_OFFSET_DEG;
+	delta_deg        = motor_angle - last_motor_angle;
+	delta_pulses     = (int32_t)(delta_deg * BALANCE_PULSE_PER_DEG);
 
-	if (delta_pulses != 0)
-	{
-		ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, delta_pulses);
-		s_angle = angle_deg;
-	}
+	if (delta_pulses == 0)
+		return;
+
+	s_angle_cmd = angle_deg;
+
+	ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, delta_pulses);
 }
 
 /* ========== 初始化 ========== */
@@ -84,8 +95,7 @@ void Balance_Init(void)
 {
 	/*
 	 * 0. 等待电机驱动板上电完成
-	 *    MCU 启动比驱动板快，不发这个等会导致命令丢失，
-	 *    表现为上电后必须按 MCU Reset 才执行。
+	 *    MCU 启动比驱动板快，不发这个等会导致命令丢失。
 	 */
 	delay_ms(1500);
 
@@ -116,11 +126,12 @@ void Balance_Init(void)
 	                               BALANCE_ZERO_CUR_MA,
 	                               BALANCE_ZERO_TIME_MS,
 	                               false);             /* 不上电自动回零 */
-		/* 配置过流保护（不存储到 flash，须在使能前设置） */
-		ZDT_Motor_Modify_Otocp(BALANCE_MOTOR_ID, false,
-		                       100,               /* otp = 100°C */
-		                       BALANCE_OCP_MA,
-		                       BALANCE_OCP_TIME_MS);
+
+	/* 配置过流保护（不存储到 flash，须在使能前设置） */
+	ZDT_Motor_Modify_Otocp(BALANCE_MOTOR_ID, false,
+	                       100,               /* otp = 100°C */
+	                       BALANCE_OCP_MA,
+	                       BALANCE_OCP_TIME_MS);
 
 	ZDT_Motor_En_Control(BALANCE_MOTOR_ID, true, false);
 	delay_ms(50);
@@ -130,28 +141,28 @@ void Balance_Init(void)
 	delay_ms(3000);
 	ZDT_Motor_Reset_CurPos_To_Zero(BALANCE_MOTOR_ID);
 
-		/* 回零后重新使能，确保退出回零状态 */
-		ZDT_Motor_En_Control(BALANCE_MOTOR_ID, false, false);
-		delay_ms(50);
-		ZDT_Motor_En_Control(BALANCE_MOTOR_ID, true, false);
-		delay_ms(100);
+	/* 回零后重新使能，确保退出回零状态 */
+	ZDT_Motor_En_Control(BALANCE_MOTOR_ID, false, false);
+	delay_ms(50);
+	ZDT_Motor_En_Control(BALANCE_MOTOR_ID, true, false);
+	delay_ms(100);
 #endif
 
 	/*
-	 * 2. 预设 QPos 参数
-	 *    raF=0: QPos_Control 的脉冲数 = 相对上次目标的位移量
+	 * 2. 预设 QPos 参数（仅用于初始化阶段的相对上抬）
 	 */
 	ZDT_Motor_Set_QPos_Params(BALANCE_MOTOR_ID,
 	                          BALANCE_WORK_VEL,
-	                          5,     /* acc = 轻微加减速 */
+	                          BALANCE_WORK_ACC,
 	                          0,     /* raF = 相对上次目标 */
 	                          false);
 
 	/*
 	 * 3. 回零后上抬到水平位置
 	 *    回零时摆杆碰地/硬停 → motor pos=0。
-	 *    水平位置在零点上方 BALANCE_HOME_OFFSET_DEG 度。
-	 *    首次安装后实测：逐步加大此值直到摆杆肉眼水平。
+	 *    水平位置 = HOME_OFFSET_DEG（电机坐标系）。
+	 *    不重置电机原点（Reset/Origin_Set_O 均无法更改电机原点），
+	 *    改为在 Set_Angle() 中叠加 HOME_OFFSET 完成坐标转换。
 	 */
 	if (BALANCE_HOME_OFFSET_DEG != 0.0f)
 	{
@@ -161,40 +172,33 @@ void Balance_Init(void)
 		                   * BALANCE_PULSE_PER_DEG);
 		if (pulses != 0)
 		{
-			delay_ms(100);  // 等 QPos 参数生效
+			delay_ms(100);
 			ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, pulses);
 			delay_ms(1000);
 		}
-		/*
-		 * 将平衡位置设为新的零点（0°=水平，方便绝对定位）
-		 * 此后 Pos_Control(0) 直接回平衡位，无需叠加 HOME_OFFSET。
-		 */
-		ZDT_Motor_Reset_CurPos_To_Zero(BALANCE_MOTOR_ID);
-			/*
-			 * 重设 QPos 参数，强制 QPos 目标同步到新零点。
-			 * Reset_CurPos_To_Zero 仅清零绝对位置计数器，
-			 * QPos 相对模式的目标寄存器需重新初始化，
-			 * 否则每次 QPos_Control 会叠加 HOME_OFFSET 偏移。
-			 */
-			ZDT_Motor_Set_QPos_Params(BALANCE_MOTOR_ID,
-			                          BALANCE_WORK_VEL,
-			                          5,     /* acc */
-			                          0,     /* raF = 相对模式 */
-			                          false);
 	}
 
-	/* 4. 初始化内部状态（此时 s_angle=0 表示水平位置） */
-	s_angle          = 0.0f;
+	/* 4. 初始化内部状态（s_angle_cmd=0 表示水平位置） */
+	s_angle_cmd      = 0.0f;
 	s_target_pos     = 0.0f;
 	s_ball_pos       = 0.0f;
 	s_ball_vel       = 0.0f;
-	s_last_ball_pos  = 0.0f;
 	s_ff_accel       = 0.0f;
-	s_last_update_ms = 0;
 	s_confidence     = 0;
+	s_last_update_ms = 0;
+	s_i_accum        = 0.0f;
 
-	s_seq_running    = false;
-	s_seq_done       = false;
+	s_ring_idx       = 0;
+	s_ring_count     = 0;
+
+	s_motion               = MOTION_UNKNOWN;
+	s_stationary_since_ms  = 0;
+	s_stationary_start_pos = 0.0f;
+
+	s_breakaway_boost      = 0.0f;
+	s_breakaway_start_ms   = 0.0f;
+	s_breakaway_active     = false;
+	s_breakaway_dir        = 0;
 }
 
 /* ========== 目标设定 ========== */
@@ -213,6 +217,12 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	float    angle_d;
 	float    angle_cmd;
 	uint32_t now_ms;
+	float    dt_s;
+	uint8_t  newest_idx;
+	uint8_t  oldest_idx;
+	float    abs_err;
+	bool     toward_target;
+	float    d_scale;
 
 	s_confidence = confidence;
 
@@ -220,88 +230,231 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	if (confidence == 0)
 		return;
 
-	/* 位置低通滤波 */
+	now_ms = Board_GetTickMs();
+
+	/* ---- 1. 位置低通滤波 ---- */
 	s_ball_pos = s_ball_pos * (1.0f - POS_FILTER_ALPHA)
 	           + ball_pos_mm    * POS_FILTER_ALPHA;
 
-	/* 速度估计：一阶差分 + 低通 */
-	now_ms = Board_GetTickMs();
-	if (s_last_update_ms > 0)
+	/* ---- 2. 环形缓冲更新 ---- */
+	s_pos_ring[s_ring_idx]  = s_ball_pos;
+	s_time_ring[s_ring_idx] = now_ms;
+	s_ring_idx = (s_ring_idx + 1) % VEL_WINDOW_SIZE;
+	if (s_ring_count < VEL_WINDOW_SIZE)
+		s_ring_count++;
+
+	/* ---- 3. 窗口速度估计 ---- */
+	if (s_ring_count >= VEL_WINDOW_SIZE)
 	{
-		float dt = (float)(now_ms - s_last_update_ms) * 0.001f;
+		uint32_t dt_ms;
+		float    dp;
+		float    raw_vel;
 
-		if (dt > 0.001f)
+		/*
+		 * 最旧样本 = 当前写入位置。
+		 * 环形缓冲满后，s_ring_idx 指向最旧的元素。
+		 */
+		oldest_idx = s_ring_idx;
+		newest_idx = (s_ring_idx + VEL_WINDOW_SIZE - 1) % VEL_WINDOW_SIZE;
+
+		dt_ms = s_time_ring[newest_idx] - s_time_ring[oldest_idx];
+
+		/* 至少 80% 窗口时长才计算有效速度 */
+		if (dt_ms >= (uint32_t)(VEL_WINDOW_MS * 0.8f))
 		{
-			float raw_vel;
+			dp  = s_pos_ring[newest_idx]
+			    - s_pos_ring[oldest_idx];
+			raw_vel = dp / (float)dt_ms * 1000.0f;
 
-			raw_vel    = (s_ball_pos - s_last_ball_pos) / dt;
-			s_last_dt = dt;
-			s_ball_vel = s_ball_vel * (1.0f - VEL_FILTER_ALPHA)
-			           + raw_vel     * VEL_FILTER_ALPHA;
+			/* 一阶 IIR 平滑 */
+			s_ball_vel = s_ball_vel * 0.7f + raw_vel * 0.3f;
 		}
 	}
+
+	/* ---- 4. dt 计算（I 项用） ---- */
+	dt_s = 0.0f;
+	if (s_last_update_ms > 0)
+	{
+		dt_s = (float)(now_ms - s_last_update_ms) * 0.001f;
+		if (dt_s > 0.1f)
+			dt_s = 0.1f;
+	}
 	s_last_update_ms = now_ms;
-	s_last_ball_pos  = s_ball_pos;
 
-	/* 静态平衡序列运行中 → 角度由序列控制，跳过 PD */
-	if (s_seq_running)
-		return;
+	/* ---- 5. 运动状态判定 ---- */
+	{
+		float abs_vel;
 
-	/* ---- PD 控制律 ---- */
+		abs_vel = (s_ball_vel >= 0.0f) ? s_ball_vel : -s_ball_vel;
+		(void)abs_vel;
+
+		if (abs_vel < STATIONARY_VEL_MM_S)
+		{
+			if (s_motion != MOTION_STATIONARY)
+			{
+				if (s_stationary_since_ms == 0)
+				{
+					s_stationary_since_ms  = now_ms;
+					s_stationary_start_pos = s_ball_pos;
+				}
+				else if (now_ms - s_stationary_since_ms
+				         >= STATIONARY_CONFIRM_MS)
+				{
+					s_motion = MOTION_STATIONARY;
+				}
+			}
+		}
+		else
+		{
+			s_motion              = MOTION_ROLLING;
+			s_stationary_since_ms = 0;
+		}
+	}
+
+	/* ---- 6. PID 计算 ---- */
 
 	pos_error = s_target_pos - s_ball_pos;
 
-	/* 低置信时降 KP 减少激进控制 */
+	/* 低置信时降 KP */
 	if (confidence == 1)
 		pos_error *= 0.5f;
 
-	angle_p   = BALANCE_KP * pos_error;
-	angle_d   = BALANCE_KD * s_ball_vel;
-
-	/*
-	 * 死区：球在目标附近时，位置噪声被 D 项放大导致摆杆抖动。
-	 * 误差 < 死区时 D 项按比例衰减，压低假速度的影响。
-	 */
+	/* 6a. 目标死区：球在目标附近且静止 → 冻结角度 */
+	abs_err = (pos_error >= 0.0f) ? pos_error : -pos_error;
+	if (abs_err < TARGET_DEADBAND_MM
+	    && s_motion == MOTION_STATIONARY)
 	{
-		float abs_err = (pos_error >= 0.0f) ? pos_error : -pos_error;
-
-		if (abs_err < BALANCE_DEADBAND_MM)
-			angle_d *= abs_err / BALANCE_DEADBAND_MM;
+		s_i_accum            = 0.0f;
+		s_breakaway_active   = false;
+		s_breakaway_boost    = 0.0f;
+		s_ff_accel           = 0.0f;
+		return;
 	}
-	angle_cmd = angle_p - angle_d;
+
+	/* 6b. P 项 + 限幅 */
+	angle_p = BALANCE_KP * pos_error;
+	if (angle_p > BALANCE_P_LIMIT_DEG)
+		angle_p = BALANCE_P_LIMIT_DEG;
+	else if (angle_p < -BALANCE_P_LIMIT_DEG)
+		angle_p = -BALANCE_P_LIMIT_DEG;
+
+	/* 6c. D 项 + 制动渐进 */
+	angle_d   = BALANCE_KD * s_ball_vel;
+	toward_target = (pos_error > 0.0f && s_ball_vel < 0.0f)
+	             || (pos_error < 0.0f && s_ball_vel > 0.0f);
+
+	if (toward_target)
+	{
 		/*
-		 * I 项：积分消除恒定偏置（管子不水平、机械不对称）。
-		 * Anti-windup：只在未饱和时累积，且 I 项 ±5° 硬限幅。
+		 * 球正滚向目标 → 按距离衰减 D。
+		 * 远处只保留 20% D，防止过早压平轨道。
+		 * 近处全 D，精确制动。
 		 */
-		{
-		float dt = s_last_dt;
+		if (abs_err > BRAKE_START_ERROR_MM)
+			d_scale = BRAKE_FAR_SCALE;
+		else if (abs_err > BRAKE_FULL_ERROR_MM)
+			d_scale = BRAKE_FAR_SCALE
+			        + (1.0f - BRAKE_FAR_SCALE)
+			          * (BRAKE_START_ERROR_MM - abs_err)
+			          / (BRAKE_START_ERROR_MM - BRAKE_FULL_ERROR_MM);
+		else
+			d_scale = 1.0f;
+	}
+	else
+	{
+		/* 球滚离目标 → 全 D，全力制动 */
+		d_scale = 1.0f;
+	}
+	angle_d *= d_scale;
 
-		if (dt > 0.001f && dt < 0.1f)
+	if (angle_d > BALANCE_D_LIMIT_DEG)
+		angle_d = BALANCE_D_LIMIT_DEG;
+	else if (angle_d < -BALANCE_D_LIMIT_DEG)
+		angle_d = -BALANCE_D_LIMIT_DEG;
+
+	/* 6d. I 项 + anti-windup */
+	{
+		float pd_sum;
+
+		pd_sum = angle_p - angle_d;
+
+		if (s_motion == MOTION_ROLLING
+		    && dt_s > 0.001f
+		    && pd_sum > -BALANCE_MAX_ANGLE_DEG
+		    && pd_sum < BALANCE_MAX_ANGLE_DEG)
 		{
-			/* PD (不含 FF) 未饱和 → 累积积分 */
-			if (angle_cmd > -BALANCE_MAX_ANGLE_DEG
-			    && angle_cmd < BALANCE_MAX_ANGLE_DEG)
+			s_i_accum += BALANCE_KI * pos_error * dt_s;
+		}
+
+		if (s_i_accum > BALANCE_I_LIMIT_DEG)
+			s_i_accum = BALANCE_I_LIMIT_DEG;
+		else if (s_i_accum < -BALANCE_I_LIMIT_DEG)
+			s_i_accum = -BALANCE_I_LIMIT_DEG;
+
+		angle_cmd = pd_sum + s_i_accum;
+	}
+
+	/* 6e. 静止起动补偿 */
+	if (s_motion == MOTION_STATIONARY
+	    && abs_err > BREAKAWAY_ERROR_MIN_MM)
+	{
+		float boost_dt;
+		float boost_target;
+
+		if (!s_breakaway_active)
+		{
+			s_breakaway_active   = true;
+			s_breakaway_dir      = (pos_error > 0.0f) ? 1 : -1;
+			s_breakaway_start_ms = (float)now_ms;
+			s_breakaway_boost    = 0.0f;
+		}
+
+		boost_dt     = ((float)now_ms - s_breakaway_start_ms) * 0.001f;
+		boost_target = boost_dt * BREAKAWAY_BOOST_DEG_PER_S;
+		if (boost_target > BREAKAWAY_MAX_BOOST_DEG)
+			boost_target = BREAKAWAY_MAX_BOOST_DEG;
+		s_breakaway_boost = boost_target;
+
+		angle_cmd += s_breakaway_boost * (float)s_breakaway_dir;
+	}
+	else
+	{
+		/*
+		 * 球在滚动或已进入目标带 → 快速释放补偿。
+		 */
+		if (s_breakaway_active)
+		{
+			bool  rolling_away;
+			float abs_vel;
+
+			abs_vel = (s_ball_vel >= 0.0f) ? s_ball_vel : -s_ball_vel;
+			(void)abs_vel;
+
+			rolling_away =
+				(pos_error > 0.0f && s_ball_vel > BREAKAWAY_RELEASE_VEL_MM_S)
+				|| (pos_error < 0.0f && s_ball_vel < -BREAKAWAY_RELEASE_VEL_MM_S);
+
+			if (s_motion == MOTION_ROLLING
+			    || abs_err < TARGET_DEADBAND_MM
+			    || rolling_away)
 			{
-				s_i_accum += BALANCE_KI * pos_error * dt;
+				s_breakaway_boost *= 0.3f;
+				if (s_breakaway_boost < 0.2f)
+				{
+					s_breakaway_boost  = 0.0f;
+					s_breakaway_active = false;
+					s_breakaway_dir    = 0;
+				}
+				angle_cmd += s_breakaway_boost * (float)s_breakaway_dir;
 			}
-
-			/* I 项硬限幅 */
-			if (s_i_accum > 5.0f)  s_i_accum = 5.0f;
-			if (s_i_accum < -5.0f) s_i_accum = -5.0f;
 		}
-		}
+	}
 
-		angle_cmd += s_i_accum;
-
-	/* 叠加底盘前馈 */
+	/* 6f. 叠加底盘前馈 + 控制方向 + 发送 */
 	angle_cmd += s_ff_accel;
 	s_ff_accel = 0.0f;
 
-	/* 钳位 + 发送 */
-	if (angle_cmd > BALANCE_MAX_ANGLE_DEG)
-		angle_cmd = BALANCE_MAX_ANGLE_DEG;
-	else if (angle_cmd < -BALANCE_MAX_ANGLE_DEG)
-		angle_cmd = -BALANCE_MAX_ANGLE_DEG;
+	angle_cmd *= (float)BALANCE_CONTROL_SIGN;
 
 	Set_Angle(angle_cmd);
 }
@@ -321,7 +474,7 @@ void Balance_ChassisFF(float accel_m_s2)
 
 float Balance_GetAngle(void)
 {
-	return s_angle;
+	return s_angle_cmd;
 }
 
 void Balance_SetAngle(float angle_deg)
@@ -329,60 +482,7 @@ void Balance_SetAngle(float angle_deg)
 	Set_Angle(angle_deg);
 }
 
-/* ========== 静态平衡序列（要求 3） ========== */
-
-/**
- * @brief 启动静态平衡序列
- * @note  车静止，开环时序：O → +5cm → -5cm
- */
-void Balance_Start(void)
-{
-	s_seq_step    = 0;
-	s_seq_tick    = Board_GetTickMs();
-	s_seq_running = true;
-	s_seq_done    = false;
-
-	/* 目标从 O 点出发 */
-	s_target_pos = 0.0f;
-
-	/* 应用第一步的角度 */
-	if (S_SEQ_LEN > 0)
-		Set_Angle(s_seq_table[0].angle_deg);
-}
-
-/**
- * @brief 静态平衡序列状态机 — 每主循环周期调用
- * @note  根据时间推进序列步骤，完成后摆杆回水平
- */
-void Balance_SeqUpdate(void)
-{
-	uint32_t now_ms;
-
-	if (!s_seq_running)
-		return;
-
-	now_ms = Board_GetTickMs();
-
-	/* 当前步骤时间到 → 推进 */
-	if (now_ms - s_seq_tick >= s_seq_table[s_seq_step].duration_ms)
-	{
-		s_seq_step++;
-
-		/* 序列结束（超出表长或 duration_ms==0） */
-		if (s_seq_step >= S_SEQ_LEN
-		    || s_seq_table[s_seq_step].duration_ms == 0)
-		{
-			Set_Angle(0.0f);
-			s_seq_running = false;
-			s_seq_done    = true;
-			return;
-		}
-
-		/* 进入下一步 */
-		s_seq_tick = now_ms;
-		Set_Angle(s_seq_table[s_seq_step].angle_deg);
-	}
-}
+/* ========== 停止 ========== */
 
 /**
  * @brief 停止平衡控制，摆杆回水平
@@ -390,14 +490,15 @@ void Balance_SeqUpdate(void)
 void Balance_Stop(void)
 {
 	ZDT_Motor_Stop_Now(BALANCE_MOTOR_ID, false);
-	s_seq_running = false;
-	s_angle       = 0.0f;
-}
 
-/**
- * @brief 查询静态平衡序列是否执行完毕
- */
-bool Balance_IsDone(void)
-{
-	return s_seq_done;
+	s_angle_cmd    = 0.0f;
+	s_i_accum      = 0.0f;
+	s_ff_accel     = 0.0f;
+
+	s_breakaway_active = false;
+	s_breakaway_boost  = 0.0f;
+	s_breakaway_dir    = 0;
+
+	s_motion              = MOTION_UNKNOWN;
+	s_stationary_since_ms = 0;
 }
