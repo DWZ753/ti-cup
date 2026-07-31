@@ -450,7 +450,7 @@ static void ChassisFF_Update(void)
 		accel_filtered = 0.0f;
 		s_ff_accel = 0.0f;
 		s_ff_angle = 0.0f;
-		ff_angle = 0.0f;  /* 0°=平衡位 */
+		ff_angle = BALANCE_HOME_OFFSET_DEG;  /* 电机坐标水平位 */
 		goto ff_apply;
 	}
 
@@ -458,18 +458,18 @@ static void ChassisFF_Update(void)
 	if (accel_filtered > -FF_ACCEL_DEADZONE && accel_filtered < FF_ACCEL_DEADZONE)
 	{
 		s_ff_angle = 0.0f;
-		ff_angle = 0.0f;  /* 0°=平衡位 */
+		ff_angle = BALANCE_HOME_OFFSET_DEG;  /* 电机坐标水平位 */
 		goto ff_apply;
 	}
 
 	/* 惯性补偿：平衡位 + FF 偏移 */
-	ff_angle = accel_filtered * FF_ACCEL_GAIN;  /* 0°=平衡位 */
-	s_ff_angle = ff_angle;
-	/* 钳位 ±BALANCE_MAX_ANGLE_DEG */
-	if (ff_angle > BALANCE_MAX_ANGLE_DEG)
-		ff_angle = BALANCE_MAX_ANGLE_DEG;
-	else if (ff_angle < -BALANCE_MAX_ANGLE_DEG)
-		ff_angle = -BALANCE_MAX_ANGLE_DEG;
+	s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
+	ff_angle = BALANCE_HOME_OFFSET_DEG + s_ff_angle;  /* 水平位+FF偏移 */
+	/* 钳位：水平位 ± MAX_ANGLE */
+	if (ff_angle > BALANCE_HOME_OFFSET_DEG + BALANCE_MAX_ANGLE_DEG)
+		ff_angle = BALANCE_HOME_OFFSET_DEG + BALANCE_MAX_ANGLE_DEG;
+	else if (ff_angle < BALANCE_HOME_OFFSET_DEG - BALANCE_MAX_ANGLE_DEG)
+		ff_angle = BALANCE_HOME_OFFSET_DEG - BALANCE_MAX_ANGLE_DEG;
 
 
 ff_apply:

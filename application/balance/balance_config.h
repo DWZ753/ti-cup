@@ -40,7 +40,7 @@
 /* °/(mm·s)，I 项增益→积分消除静态偏差 */
 #define BALANCE_KI                0.01f
 /* °/(mm/s)，球速→反向倾角 */
-#define BALANCE_KD                0.3f
+#define BALANCE_KD                0.25f
 
 /* ========== 底盘前馈 ========== */
 
@@ -70,25 +70,23 @@
 
 #define PI_TIMEOUT_MS             200    // 超时判丢球
 
-/* ========== 静态平衡序列（要求3，开环时序） ========== */
+/* ========== 静态平衡序列（要求3，闭环位置控制） ========== */
 
-/* 各阶段：{倾角(°), 持续时间(ms)}，最后一段 angle=0 表示完成 */
-#define STATIC_SEQ_LEN            7
+/*
+ * 各阶段：{球目标位置(mm), 到达后停留(ms)}。
+ * 球到达目标 ± SEQ_THRESHOLD 后开始停留计时，到时推进下一步。
+ * 全部步骤完成后自动结束。正=右，负=左。
+ */
+#define STATIC_SEQ_LEN            3
 
-/* 倾角 >0 = 球往 +x 滚，<0 = 球往 -x 滚 */
-#define STATIC_SEQ_ANGLE_0        10.0f   // 加速向 +5cm
-#define STATIC_SEQ_TIME_0         600
-#define STATIC_SEQ_ANGLE_1        -20.0f  // 减速
-#define STATIC_SEQ_TIME_1         400
-#define STATIC_SEQ_ANGLE_2        0.0f   // 停在 +5cm
-#define STATIC_SEQ_TIME_2         0
-#define STATIC_SEQ_ANGLE_3        -10.0f  // 加速向 -5cm
-#define STATIC_SEQ_TIME_3         150
-#define STATIC_SEQ_ANGLE_4        30.0f   // 减速
-#define STATIC_SEQ_TIME_4         1500
-#define STATIC_SEQ_ANGLE_5        0.0f   // 停在 -5cm
-#define STATIC_SEQ_TIME_5         0
-#define STATIC_SEQ_ANGLE_6        0.0f   // 结束
-#define STATIC_SEQ_TIME_6         0
+#define STATIC_SEQ_TARGET_0       0.0f    // 起始 O 点
+#define STATIC_SEQ_DWELL_0        500
+#define STATIC_SEQ_TARGET_1       50.0f   // +5cm
+#define STATIC_SEQ_DWELL_1        1000
+#define STATIC_SEQ_TARGET_2       -50.0f  // -5cm
+#define STATIC_SEQ_DWELL_2        1000
+
+/* 球到达目标判定阈值 (mm) */
+#define BALANCE_SEQ_THRESHOLD_MM   5.0f
 
 #endif /* __BALANCE_CONFIG_H__ */

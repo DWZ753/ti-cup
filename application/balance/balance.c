@@ -31,16 +31,12 @@ static uint8_t  s_confidence;        // 最近一次置信度
 /* ========== 静态平衡序列（要求 3） ========== */
 
 static const struct {
-	float    angle_deg;
-	uint16_t duration_ms;
+	float    target_mm;
+	uint16_t dwell_ms;
 } s_seq_table[] = {
-	{ STATIC_SEQ_ANGLE_0, STATIC_SEQ_TIME_0 },
-	{ STATIC_SEQ_ANGLE_1, STATIC_SEQ_TIME_1 },
-	{ STATIC_SEQ_ANGLE_2, STATIC_SEQ_TIME_2 },
-	{ STATIC_SEQ_ANGLE_3, STATIC_SEQ_TIME_3 },
-	{ STATIC_SEQ_ANGLE_4, STATIC_SEQ_TIME_4 },
-	{ STATIC_SEQ_ANGLE_5, STATIC_SEQ_TIME_5 },
-	{ STATIC_SEQ_ANGLE_6, STATIC_SEQ_TIME_6 },
+	{ STATIC_SEQ_TARGET_0, STATIC_SEQ_DWELL_0 },
+	{ STATIC_SEQ_TARGET_1, STATIC_SEQ_DWELL_1 },
+	{ STATIC_SEQ_TARGET_2, STATIC_SEQ_DWELL_2 },
 };
 
 #define S_SEQ_LEN  (sizeof(s_seq_table) / sizeof(s_seq_table[0]))
@@ -49,6 +45,7 @@ static uint8_t  s_seq_step;
 static uint32_t s_seq_tick;
 static bool     s_seq_running;
 static bool     s_seq_done;
+static bool     s_seq_reached;
 
 /* ========== 内部控制 ========== */
 
@@ -58,23 +55,35 @@ static bool     s_seq_done;
  */
 static void Set_Angle(float angle_deg)
 {
+	float   motor_angle;
 	float   delta_deg;
 	int32_t delta_pulses;
 
-	/* 钳位 */
-	if (angle_deg > BALANCE_MAX_ANGLE_DEG)
-		angle_deg = BALANCE_MAX_ANGLE_DEG;
-	else if (angle_deg < -BALANCE_MAX_ANGLE_DEG)
-		angle_deg = -BALANCE_MAX_ANGLE_DEG;
+	/*
+	 * 坐标转换：水平相对 (0°=水平) → 电机绝对 (0°=回零硬停位)
+	 * s_angle 始终跟踪电机坐标，QPos 相对模式在此坐标上累积。
+	 */
+	motor_angle = angle_deg + BALANCE_HOME_OFFSET_DEG;
+
+	/* 电机坐标系钳位（HOME_OFFSET ± MAX_ANGLE） */
+	{
+		float max_motor = BALANCE_HOME_OFFSET_DEG + BALANCE_MAX_ANGLE_DEG;
+		float min_motor = BALANCE_HOME_OFFSET_DEG - BALANCE_MAX_ANGLE_DEG;
+
+		if (motor_angle > max_motor)
+			motor_angle = max_motor;
+		else if (motor_angle < min_motor)
+			motor_angle = min_motor;
+	}
 
 	/* QPos 相对上次目标运动 */
-	delta_deg    = angle_deg - s_angle;
+	delta_deg    = motor_angle - s_angle;
 	delta_pulses = (int32_t)(delta_deg * BALANCE_PULSE_PER_DEG);
 
 	if (delta_pulses != 0)
 	{
 		ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, delta_pulses);
-		s_angle = angle_deg;
+		s_angle = motor_angle;
 	}
 }
 
@@ -166,25 +175,18 @@ void Balance_Init(void)
 			delay_ms(1000);
 		}
 		/*
-		 * 将平衡位置设为新的零点（0°=水平，方便绝对定位）
-		 * 此后 Pos_Control(0) 直接回平衡位，无需叠加 HOME_OFFSET。
+		 * 不再调用 Reset_CurPos_To_Zero（实测失效）。
+		 * 改为软件坐标系转换：s_angle 跟踪电机绝对坐标，
+		 * Set_Angle() 内部将水平相对角 + HOME_OFFSET 转到电机坐标。
 		 */
-		ZDT_Motor_Reset_CurPos_To_Zero(BALANCE_MOTOR_ID);
-			/*
-			 * 重设 QPos 参数，强制 QPos 目标同步到新零点。
-			 * Reset_CurPos_To_Zero 仅清零绝对位置计数器，
-			 * QPos 相对模式的目标寄存器需重新初始化，
-			 * 否则每次 QPos_Control 会叠加 HOME_OFFSET 偏移。
-			 */
-			ZDT_Motor_Set_QPos_Params(BALANCE_MOTOR_ID,
-			                          BALANCE_WORK_VEL,
-			                          5,     /* acc */
-			                          0,     /* raF = 相对模式 */
-			                          false);
 	}
 
-	/* 4. 初始化内部状态（此时 s_angle=0 表示水平位置） */
-	s_angle          = 0.0f;
+	/*
+	 * 4. 初始化内部状态
+	 *    s_angle = HOME_OFFSET_DEG，即电机坐标系中水平位置。
+	 *    此后 Set_Angle(0) = 保持水平，Set_Angle(+5) = 右倾 5°。
+	 */
+	s_angle          = BALANCE_HOME_OFFSET_DEG;
 	s_target_pos     = 0.0f;
 	s_ball_pos       = 0.0f;
 	s_ball_vel       = 0.0f;
@@ -243,11 +245,7 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	s_last_update_ms = now_ms;
 	s_last_ball_pos  = s_ball_pos;
 
-	/* 静态平衡序列运行中 → 角度由序列控制，跳过 PD */
-	if (s_seq_running)
-		return;
-
-	/* ---- PD 控制律 ---- */
+	/* ---- PD 控制律（序列运行中也执行，由 Balance_SetTarget 驱动） ---- */
 
 	pos_error = s_target_pos - s_ball_pos;
 
@@ -332,8 +330,8 @@ void Balance_SetAngle(float angle_deg)
 /* ========== 静态平衡序列（要求 3） ========== */
 
 /**
- * @brief 启动静态平衡序列
- * @note  车静止，开环时序：O → +5cm → -5cm
+ * @brief 启动静态平衡序列（闭环）
+ * @note  PD 持续运行，按时间推进球目标位置：0 → +5cm → -5cm → 0
  */
 void Balance_Start(void)
 {
@@ -341,46 +339,59 @@ void Balance_Start(void)
 	s_seq_tick    = Board_GetTickMs();
 	s_seq_running = true;
 	s_seq_done    = false;
+	s_seq_reached = false;
 
-	/* 目标从 O 点出发 */
-	s_target_pos = 0.0f;
-
-	/* 应用第一步的角度 */
+	/* 设第一个目标位置 */
 	if (S_SEQ_LEN > 0)
-		Set_Angle(s_seq_table[0].angle_deg);
+		s_target_pos = s_seq_table[0].target_mm;
 }
 
 /**
  * @brief 静态平衡序列状态机 — 每主循环周期调用
- * @note  根据时间推进序列步骤，完成后摆杆回水平
+ * @note  球到达目标 ± SEQ_THRESHOLD 后开始停留计时，到时推进。
+ *        全部步骤完成 → 目标归零，标记 done。
  */
 void Balance_SeqUpdate(void)
 {
 	uint32_t now_ms;
+	float    err;
+	float    target;
 
 	if (!s_seq_running)
 		return;
 
 	now_ms = Board_GetTickMs();
+	target = s_seq_table[s_seq_step].target_mm;
 
-	/* 当前步骤时间到 → 推进 */
-	if (now_ms - s_seq_tick >= s_seq_table[s_seq_step].duration_ms)
+	/* 球到达目标？ */
+	if (!s_seq_reached)
+	{
+		err = s_ball_pos - target;
+		if (err < 0.0f) err = -err;
+		if (err < BALANCE_SEQ_THRESHOLD_MM)
+		{
+			s_seq_reached = true;
+			s_seq_tick    = now_ms;
+		}
+		return;
+	}
+
+	/* 到达后停留计时 → 推进下一步 */
+	if (now_ms - s_seq_tick >= s_seq_table[s_seq_step].dwell_ms)
 	{
 		s_seq_step++;
+		s_seq_reached = false;
 
-		/* 序列结束（超出表长或 duration_ms==0） */
-		if (s_seq_step >= S_SEQ_LEN
-		    || s_seq_table[s_seq_step].duration_ms == 0)
+		/* 序列结束 */
+		if (s_seq_step >= S_SEQ_LEN)
 		{
-			Set_Angle(0.0f);
+			s_target_pos  = 0.0f;
 			s_seq_running = false;
 			s_seq_done    = true;
 			return;
 		}
 
-		/* 进入下一步 */
-		s_seq_tick = now_ms;
-		Set_Angle(s_seq_table[s_seq_step].angle_deg);
+		s_target_pos = s_seq_table[s_seq_step].target_mm;
 	}
 }
 
@@ -391,7 +402,7 @@ void Balance_Stop(void)
 {
 	ZDT_Motor_Stop_Now(BALANCE_MOTOR_ID, false);
 	s_seq_running = false;
-	s_angle       = 0.0f;
+	s_angle       = BALANCE_HOME_OFFSET_DEG;
 }
 
 /**
