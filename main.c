@@ -79,6 +79,9 @@ static int8_t   s_rc_speed;       // Pi 下发的速度百分比 [-100, +100]
 static int8_t   s_rc_diff;        // Pi 下发的差速百分比 [-100, +100]
 static int8_t   s_rc_beam;        // Pi 下发的摆杆倾角 (°)
 static uint32_t s_rc_last_ms;     // 最近收到 Pi 指令的时间戳
+	/* ========== Pi 球位置调试 ========== */
+	static int16_t  s_debug_ball_pos;  // Pi 发来的球位置 (mm)
+	static uint8_t  s_debug_ball_conf; // Pi 发来的置信度 0/1/2
 
 /* ========== 底盘前馈 ========== */
 
@@ -153,7 +156,10 @@ static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 		{
 			int16_t pos_mm = (int16_t)(((uint16_t)payload[0] << 8) | payload[1]);
 			uint8_t conf   = payload[2];
+			/* 闭环 PD 控制 */
 			Balance_Update((float)pos_mm, 0.0f, conf);
+			s_debug_ball_pos = pos_mm;
+			s_debug_ball_conf = conf;
 		}
 		break;
 
@@ -234,6 +240,7 @@ static void Running_Show_First(void)
 	OLED_ShowString(0, 5, (uint8_t*)"R:", 8);
 	OLED_ShowString(64, 4, (uint8_t*)"a:", 8);
 	OLED_ShowString(64, 5, (uint8_t*)"F:", 8);
+	OLED_ShowString(0, 6, (uint8_t*)"Pi:", 8);
 }
 
 /**
@@ -278,6 +285,26 @@ static void Running_Show_Time(uint32_t elapsed_ms)
 		if (val < 0) val = -val;
 		OLED_ShowChar(76, 5, sign, 8);
 		OLED_ShowNum(84, 5, (uint32_t)val, 3, 8);
+	}
+		/* Pi 球位置调试 */
+		{
+		int32_t pos = (int32_t)s_debug_ball_pos;
+		uint8_t sign;
+		uint32_t age_ms;
+
+		sign = (pos >= 0) ? '+' : '-';
+		if (pos < 0) pos = -pos;
+		OLED_ShowChar(24, 6, sign, 8);
+		OLED_ShowNum(32, 6, (uint32_t)pos, 4, 8);
+		OLED_ShowString(64, 6, (uint8_t*)"mm", 8);
+		OLED_ShowChar(88, 6, 'C', 8);
+		OLED_ShowChar(96, 6, '0' + s_debug_ball_conf, 8);
+
+		/* 诊断：距上次 Pi 帧的毫秒数，>500ms = 链路断 */
+		age_ms = Board_GetTickMs() - s_rc_last_ms;
+		if (age_ms > 999) age_ms = 999;
+		OLED_ShowChar(104, 6, 'D', 8);
+		OLED_ShowNum(112, 6, age_ms, 3, 8);
 	}
 }
 
@@ -403,13 +430,27 @@ static void ChassisFF_Update(void)
 
 	s_ff_accel = accel_filtered;
 
+	/*
+	 * Pi 闭环模式：加速度馈入 Balance_Update() 的 FF 累加器，
+	 * 由 PD 控制律统一输出 QPos_Control。
+	 * Pi 离线时退回开环 Pos_Control 直接驱动。
+	 */
+	if (Board_GetTickMs() - s_rc_last_ms < PI_TIMEOUT_MS)
+	{
+		Balance_ChassisFF(accel_filtered);
+		s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
+		return;
+	}
+
+	/* ---- 开环：直接 Pos_Control（无 Pi 时） ---- */
+
 	/* 速度接近 0 → 强制回平衡位 */
 	if (speed_now > -20.0f && speed_now < 20.0f && accel_raw > -0.5f && accel_raw < 0.5f)
 	{
 		accel_filtered = 0.0f;
 		s_ff_accel = 0.0f;
 		s_ff_angle = 0.0f;
-		ff_angle = BALANCE_HOME_OFFSET_DEG;
+		ff_angle = 0.0f;  /* 0°=平衡位 */
 		goto ff_apply;
 	}
 
@@ -417,13 +458,19 @@ static void ChassisFF_Update(void)
 	if (accel_filtered > -FF_ACCEL_DEADZONE && accel_filtered < FF_ACCEL_DEADZONE)
 	{
 		s_ff_angle = 0.0f;
-		ff_angle = BALANCE_HOME_OFFSET_DEG;
+		ff_angle = 0.0f;  /* 0°=平衡位 */
 		goto ff_apply;
 	}
 
 	/* 惯性补偿：平衡位 + FF 偏移 */
-	ff_angle = BALANCE_HOME_OFFSET_DEG + accel_filtered * FF_ACCEL_GAIN;
+	ff_angle = accel_filtered * FF_ACCEL_GAIN;  /* 0°=平衡位 */
 	s_ff_angle = ff_angle;
+	/* 钳位 ±BALANCE_MAX_ANGLE_DEG */
+	if (ff_angle > BALANCE_MAX_ANGLE_DEG)
+		ff_angle = BALANCE_MAX_ANGLE_DEG;
+	else if (ff_angle < -BALANCE_MAX_ANGLE_DEG)
+		ff_angle = -BALANCE_MAX_ANGLE_DEG;
+
 
 ff_apply:
 	/* 绝对位置控制：直接定位到目标角度，不依赖相对运动累积 */

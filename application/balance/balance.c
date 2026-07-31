@@ -24,6 +24,8 @@ static float    s_ball_vel;          // 低通后球速度 (mm/s)
 static float    s_last_ball_pos;     // 上次球位置 (速度估计用)
 static float    s_ff_accel;          // 待叠加底盘 FF 倾角 (°)
 static uint32_t s_last_update_ms;    // 上次 Update() 时间戳
+	static float    s_i_accum;           // I 项积分器 (消除稳态偏置)
+	static float    s_last_dt;           // 上次 dt (I 项用)
 static uint8_t  s_confidence;        // 最近一次置信度
 
 /* ========== 静态平衡序列（要求 3） ========== */
@@ -163,6 +165,22 @@ void Balance_Init(void)
 			ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, pulses);
 			delay_ms(1000);
 		}
+		/*
+		 * 将平衡位置设为新的零点（0°=水平，方便绝对定位）
+		 * 此后 Pos_Control(0) 直接回平衡位，无需叠加 HOME_OFFSET。
+		 */
+		ZDT_Motor_Reset_CurPos_To_Zero(BALANCE_MOTOR_ID);
+			/*
+			 * 重设 QPos 参数，强制 QPos 目标同步到新零点。
+			 * Reset_CurPos_To_Zero 仅清零绝对位置计数器，
+			 * QPos 相对模式的目标寄存器需重新初始化，
+			 * 否则每次 QPos_Control 会叠加 HOME_OFFSET 偏移。
+			 */
+			ZDT_Motor_Set_QPos_Params(BALANCE_MOTOR_ID,
+			                          BALANCE_WORK_VEL,
+			                          5,     /* acc */
+			                          0,     /* raF = 相对模式 */
+			                          false);
 	}
 
 	/* 4. 初始化内部状态（此时 s_angle=0 表示水平位置） */
@@ -217,6 +235,7 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 			float raw_vel;
 
 			raw_vel    = (s_ball_pos - s_last_ball_pos) / dt;
+			s_last_dt = dt;
 			s_ball_vel = s_ball_vel * (1.0f - VEL_FILTER_ALPHA)
 			           + raw_vel     * VEL_FILTER_ALPHA;
 		}
@@ -238,7 +257,41 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 
 	angle_p   = BALANCE_KP * pos_error;
 	angle_d   = BALANCE_KD * s_ball_vel;
-	angle_cmd = angle_p + angle_d;
+
+	/*
+	 * 死区：球在目标附近时，位置噪声被 D 项放大导致摆杆抖动。
+	 * 误差 < 死区时 D 项按比例衰减，压低假速度的影响。
+	 */
+	{
+		float abs_err = (pos_error >= 0.0f) ? pos_error : -pos_error;
+
+		if (abs_err < BALANCE_DEADBAND_MM)
+			angle_d *= abs_err / BALANCE_DEADBAND_MM;
+	}
+	angle_cmd = angle_p - angle_d;
+		/*
+		 * I 项：积分消除恒定偏置（管子不水平、机械不对称）。
+		 * Anti-windup：只在未饱和时累积，且 I 项 ±5° 硬限幅。
+		 */
+		{
+		float dt = s_last_dt;
+
+		if (dt > 0.001f && dt < 0.1f)
+		{
+			/* PD (不含 FF) 未饱和 → 累积积分 */
+			if (angle_cmd > -BALANCE_MAX_ANGLE_DEG
+			    && angle_cmd < BALANCE_MAX_ANGLE_DEG)
+			{
+				s_i_accum += BALANCE_KI * pos_error * dt;
+			}
+
+			/* I 项硬限幅 */
+			if (s_i_accum > 5.0f)  s_i_accum = 5.0f;
+			if (s_i_accum < -5.0f) s_i_accum = -5.0f;
+		}
+		}
+
+		angle_cmd += s_i_accum;
 
 	/* 叠加底盘前馈 */
 	angle_cmd += s_ff_accel;

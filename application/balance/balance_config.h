@@ -11,7 +11,7 @@
 #define BALANCE_MOTOR_ID          1
 #define BALANCE_PULSE_PER_DEG     (3200.0f / 360.0f)  // 16细分
 #define BALANCE_WORK_VEL          200                  // 工作转速(RPM)
-#define BALANCE_MAX_ANGLE_DEG     10.0f                // 摆杆最大倾角(°)
+#define BALANCE_MAX_ANGLE_DEG     5.0f                // 摆杆最大倾角(°)
 
 /* 暂时跳过回零，上电直接转 */
 #define BALANCE_SKIP_HOMING       0
@@ -36,9 +36,11 @@
 /* ========== 球位置 PD ========== */
 
 /* °/mm，位置误差→倾角 */
-#define BALANCE_KP                0.3f
+#define BALANCE_KP                0.15f
+/* °/(mm·s)，I 项增益→积分消除静态偏差 */
+#define BALANCE_KI                0.01f
 /* °/(mm/s)，球速→反向倾角 */
-#define BALANCE_KD                0.5f
+#define BALANCE_KD                0.3f
 
 /* ========== 底盘前馈 ========== */
 
@@ -51,7 +53,7 @@
 #define FF_ACCEL_GAIN             7.5f
 
 /* m/s²，加速度死区：低于此值判定为匀速，摆杆回水平 */
-#define FF_ACCEL_DEADZONE         0.01f
+#define FF_ACCEL_DEADZONE         0.5f
 
 /* 加速度低通系数（0~1）：越大越灵敏但越抖，越小越平滑但滞后 */
 #define FF_ACCEL_FILTER           0.5f
@@ -60,6 +62,9 @@
 
 #define POS_FILTER_ALPHA          0.3f   // 位置（越大越灵敏）
 #define VEL_FILTER_ALPHA          0.2f   // 速度（越大噪声越大）
+
+/* 死区 (mm)：球在目标 ± 此范围内时 D 项衰减，防噪声抖动 */
+#define BALANCE_DEADBAND_MM        2.0f
 
 /* ========== 通信 ========== */
 
