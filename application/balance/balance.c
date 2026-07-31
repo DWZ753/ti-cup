@@ -2,8 +2,8 @@
  * @file    balance.c
  * @brief   球-梁平衡控制模块实现
  *
- * 控制律（MCU 开发指引 §3.2）：
- *   angle_cmd = KP * pos_error + KD * ball_vel + chassis_FF
+ * 控制律：标准位置式 PID（modules/algorithm/pid）+ 底盘 FF
+ *   angle_cmd = PID_Compute(ball_pos) + chassis_FF
  *
  * 依赖 ZDT 闭环步进电机控制摆杆倾角。
  * 合页未到时 BALANCE_SKIP_HOMING=1，跳过机械回零。
@@ -14,22 +14,18 @@
 #include "zdt_motor.h"
 #include "delay.h"
 #include "board.h"
+#include "pid.h"
 
 /* ========== 内部状态 ========== */
 
-static float    s_angle;             // 当前摆杆倾角指令 (°)
-static float    s_target_pos;        // 球目标位置 (mm)
-static float    s_ball_pos;          // 低通后球位置 (mm)
-static float    s_ball_pos_raw;      // 原始球位置（序列阈值用，无滞后）
-static float    s_ball_vel;          // 低通后球速度 (mm/s)
-static float    s_last_ball_pos;     // 上次球位置 (速度估计用)
-static float    s_ff_accel;          // 待叠加底盘 FF 倾角 (°)
-static uint32_t s_last_update_ms;    // 上次 Update() 时间戳
-	static float    s_i_accum;           // I 项积分器 (消除稳态偏置)
-	static float    s_angle_p;           // P 项输出 (°)，调试用
-	static float    s_angle_d;           // D 项输出 (°)，调试用
-	static float    s_last_dt;           // 上次 dt (I 项用)
-static uint8_t  s_confidence;        // 最近一次置信度
+static float          s_angle;             // 当前摆杆倾角指令 (°)
+static float          s_ball_pos;          // 低通后球位置 (mm)
+static float          s_ball_pos_raw;      // 原始球位置（序列阈值用，无滞后）
+static float          s_last_ball_pos;     // 上次球位置 (速度估计用)
+static float          s_ff_accel;          // 待叠加底盘 FF 倾角 (°)
+static uint32_t       s_last_update_ms;    // 上次 Update() 时间戳
+static uint8_t        s_confidence;        // 最近一次置信度
+static PID_Controller s_balance_pid;       // 标准位置式 PID 控制器
 
 /* ========== 静态平衡序列（要求 3） ========== */
 
@@ -201,14 +197,23 @@ void Balance_Init(void)
 	 *    此后 Set_Angle(0) = 保持水平，Set_Angle(+5) = 右倾 5°。
 	 */
 	s_angle          = BALANCE_HOME_OFFSET_DEG;
-	s_target_pos     = 0.0f;
 	s_ball_pos       = 0.0f;
 	s_ball_pos_raw   = 0.0f;
-	s_ball_vel       = 0.0f;
 	s_last_ball_pos  = 0.0f;
 	s_ff_accel       = 0.0f;
 	s_last_update_ms = 0;
 	s_confidence     = 0;
+
+	/*
+	 * 5. 初始化 PID 控制器
+	 *    integral_limit: Σerror 限幅 (mm·sample)，Ki × limit = I 输出上限
+	 *    output_limit:   输出限幅 (°)，对应 BALANCE_MAX_ANGLE_DEG
+	 */
+	PID_Init(&s_balance_pid,
+	         BALANCE_KP, BALANCE_KI, BALANCE_KD,
+	         BALANCE_PID_INTEGRAL_LIMIT,
+	         BALANCE_MAX_ANGLE_DEG);
+	PID_SetTarget(&s_balance_pid, 0.0f);
 
 	s_seq_running    = false;
 	s_seq_done       = false;
@@ -218,43 +223,41 @@ void Balance_Init(void)
 
 void Balance_SetTarget(float pos_mm)
 {
-	s_target_pos = pos_mm;
-	s_i_accum    = 0.0f;
+	PID_SetTarget(&s_balance_pid, pos_mm);
+	PID_Reset(&s_balance_pid);
 }
 
 float Balance_GetTarget(void)
 {
-	return s_target_pos;
+	return s_balance_pid.target;
 }
 
 float Balance_GetIAccum(void)
 {
-	return s_i_accum;
+	return s_balance_pid.Ki * s_balance_pid.integral;
 }
 
 float Balance_GetP(void)
 {
-	return s_angle_p;
+	return s_balance_pid.Kp * s_balance_pid.error;
 }
 
 float Balance_GetD(void)
 {
-	return s_angle_d;
+	return s_balance_pid.Kd * (s_balance_pid.error
+	       - 2.0f * s_balance_pid.last_error
+	       + s_balance_pid.prev_error);
 }
 
-/* ========== PD 控制更新（Pi @50Hz 调用） ========== */
+/* ========== PID 控制更新（Pi @50Hz 调用） ========== */
 
 void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 {
-	float    pos_error;
-	float    angle_p;
-	float    angle_d;
 	float    angle_cmd;
-	uint32_t now_ms;
 
 	s_confidence = confidence;
 
-	/* 丢球 → 冻结角度，不更新 PD */
+	/* 丢球 → 冻结角度，不更新 PID */
 	if (confidence == 0)
 		return;
 
@@ -265,79 +268,23 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	s_ball_pos = s_ball_pos * (1.0f - POS_FILTER_ALPHA)
 	           + ball_pos_mm    * POS_FILTER_ALPHA;
 
-	/* 速度估计：一阶差分 + 低通 */
-	now_ms = Board_GetTickMs();
-	if (s_last_update_ms > 0)
-	{
-		float dt = (float)(now_ms - s_last_update_ms) * 0.001f;
-
-		if (dt > 0.001f)
-		{
-			float raw_vel;
-
-			raw_vel    = (s_ball_pos - s_last_ball_pos) / dt;
-			s_last_dt = dt;
-			s_ball_vel = s_ball_vel * (1.0f - VEL_FILTER_ALPHA)
-			           + raw_vel     * VEL_FILTER_ALPHA;
-		}
-	}
-	s_last_update_ms = now_ms;
+	s_last_update_ms = Board_GetTickMs();
 	s_last_ball_pos  = s_ball_pos;
 
-	/* ---- PD 控制律（序列运行中也执行，由 Balance_SetTarget 驱动） ---- */
-
-	pos_error = s_target_pos - s_ball_pos;
-
-	/* 低置信时降 KP 减少激进控制 */
-	if (confidence == 1)
-		pos_error *= 0.5f;
-
-	angle_p   = BALANCE_KP * pos_error;
-	angle_d   = BALANCE_KD * s_ball_vel;
-
 	/*
-	 * 死区：球在目标附近时，位置噪声被 D 项放大导致摆杆抖动。
-	 * 误差 < 死区时 D 项按比例衰减，压低假速度的影响。
+	 * 标准位置式 PID 计算（modules/algorithm/pid）
+	 *   P_out = Kp × error
+	 *   I_out = Ki × Σ(error)        （积分限幅 integral_limit）
+	 *   D_out = Kd × (e - 2·e₁ + e₂) （二阶差分，加速度阻尼）
+	 *   output = P + I + D           （输出限幅 output_limit）
 	 */
-	{
-		float abs_err = (pos_error >= 0.0f) ? pos_error : -pos_error;
+	angle_cmd = PID_Compute(&s_balance_pid, s_ball_pos);
 
-		if (abs_err < BALANCE_DEADBAND_MM)
-			angle_d *= abs_err / BALANCE_DEADBAND_MM;
-	}
-
-	/* 保存 PID 分量供调试显示 */
-	s_angle_p = angle_p;
-	s_angle_d = angle_d;
-	angle_cmd = angle_p - angle_d;
-		/*
-		 * I 项：积分消除恒定偏置（管子不水平、机械不对称）。
-		 * 不再以 PD 输出判断饱和——D 项 KD·vel 在球移动时
-		 * 轻松超 ±MAX_ANGLE，导致 I 永不被累积。
-		 * 仅用 I 项 ±5° 硬限幅防 deep windup。
-		 */
-		{
-		float dt = s_last_dt;
-
-		if (dt > 0.001f && dt < 0.1f)
-		{
-			s_i_accum += BALANCE_KI * pos_error * dt;
-
-			/* I 项硬限幅 */
-			if (s_i_accum > BALANCE_I_CLAMP_DEG)
-				s_i_accum = BALANCE_I_CLAMP_DEG;
-			if (s_i_accum < -BALANCE_I_CLAMP_DEG)
-				s_i_accum = -BALANCE_I_CLAMP_DEG;
-		}
-		}
-
-		angle_cmd += s_i_accum;
-
-	/* 叠加底盘前馈 */
+	/* 叠加底盘前馈（PID 限幅后叠加，惯性补偿不受限） */
 	angle_cmd += s_ff_accel;
 	s_ff_accel = 0.0f;
 
-	/* 钳位 + 发送 */
+	/* 总输出安全钳位 */
 	if (angle_cmd > BALANCE_MAX_ANGLE_DEG)
 		angle_cmd = BALANCE_MAX_ANGLE_DEG;
 	else if (angle_cmd < -BALANCE_MAX_ANGLE_DEG)
@@ -386,8 +333,8 @@ void Balance_Start(void)
 	/* 设第一个目标位置 */
 	if (S_SEQ_LEN > 0)
 	{
-		s_target_pos = s_seq_table[0].target_mm;
-		s_i_accum    = 0.0f;
+		PID_SetTarget(&s_balance_pid, s_seq_table[0].target_mm);
+		PID_Reset(&s_balance_pid);
 	}
 }
 
@@ -430,15 +377,15 @@ void Balance_SeqUpdate(void)
 		/* 序列结束 */
 		if (s_seq_step >= S_SEQ_LEN)
 		{
-			s_target_pos  = 0.0f;
-			s_i_accum     = 0.0f;
+			PID_SetTarget(&s_balance_pid, 0.0f);
+			PID_Reset(&s_balance_pid);
 			s_seq_running = false;
 			s_seq_done    = true;
 			return;
 		}
 
-		s_target_pos = s_seq_table[s_seq_step].target_mm;
-		s_i_accum    = 0.0f;
+		PID_SetTarget(&s_balance_pid, s_seq_table[s_seq_step].target_mm);
+		PID_Reset(&s_balance_pid);
 	}
 }
 

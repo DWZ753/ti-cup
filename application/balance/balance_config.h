@@ -33,16 +33,30 @@
  */
 #define BALANCE_HOME_OFFSET_DEG   -45.5f
 
-/* ========== 球位置 PD ========== */
+/* ========== 球位置 PID（标准位置式，modules/algorithm/pid） ========== */
 
-/* °/mm，位置误差→倾角 */
-#define BALANCE_KP                0.40f
-/* °/(mm·s)，I 项增益→积分消除静态偏差 */
-#define BALANCE_KI                0.15f
-/* °/(mm/s)，球速→反向倾角 */
-#define BALANCE_KD                0.50f
-/* °，I 项积分器硬限幅（防 windup） */
-#define BALANCE_I_CLAMP_DEG        50.0f
+/*
+ * PID 公式（PID_Compute 内部，~50Hz 固定周期调用）：
+ *   error  = target - ball_pos          (mm)
+ *   P_out  = KP × error                 (°)
+ *   I_out  = KI × Σ(error)              (°)，Σ 限幅 integral_limit
+ *   D_out  = KD × (e - 2·e₁ + e₂)      (°)，二阶差分 = 加速度阻尼
+ *   output = P + I + D                  (°)，限幅 MAX_ANGLE_DEG
+ *
+ * 注意 KI/KD 不含 dt！与旧手写 PID 的参数不可直接对比。
+ *   - KI 等效 ≈ 旧KI × dt（旧 0.15×0.02=0.003）
+ *   - KD 等效 ≈ 旧KD × dt（旧 0.50×0.02=0.010）
+ *   D 项从速度阻尼变为加速度阻尼，对噪声更不敏感。
+ */
+
+/* °/mm */
+#define BALANCE_KP                    0.40f
+/* °/(mm·sample)，积分增益 */
+#define BALANCE_KI                    0.005f
+/* °/(mm/sample²)，微分增益（加速度阻尼） */
+#define BALANCE_KD                    0.010f
+/* mm·sample，积分限幅（Σerror 上限，Ki×limit = I输出上限°） */
+#define BALANCE_PID_INTEGRAL_LIMIT    1000.0f
 
 /* ========== 底盘前馈 ========== */
 
@@ -68,11 +82,7 @@
  *   α → 1: 弱滤波/直通，响应快，噪声大
  *   α = 1.0: 完全直通，无滤波（调试时用）
  */
-#define POS_FILTER_ALPHA          1.0f   // 位置低通
-#define VEL_FILTER_ALPHA          1.0f   // 速度低通（噪声敏感，正式跑建议 0.1~0.3）
-
-/* 死区 (mm)：球在目标 ± 此范围内时 D 项衰减，防噪声抖动 */
-#define BALANCE_DEADBAND_MM        2.0f
+#define POS_FILTER_ALPHA          1.0f   // 位置低通（1.0=直通）
 
 /* ========== 通信 ========== */
 
