@@ -233,6 +233,11 @@ float Balance_GetAngle(void)
 	return s_angle;
 }
 
+void Balance_SetAngle(float angle_deg)
+{
+	Set_Angle(angle_deg);
+}
+
 /* ========== 静态平衡序列（要求 3） ========== */
 
 /**

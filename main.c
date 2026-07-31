@@ -7,6 +7,7 @@
  *   - KEY1 启动 + 开始计时，KEY2 停止 + 停止计时
  *   - OLED 显示菜单、计时、状态
  *   - 循环调用 Tracking_Update()
+ *   - 树莓派 UART 遥控（要求7 Remote）
  */
 
 #include "ti_msp_dl_config.h"
@@ -16,8 +17,20 @@
 #include "key.h"
 #include "oled.h"
 #include "balance.h"
+#include "protocol.h"
+#include "motor.h"
 
-/* ========== 题目模式（要求2-6） ========== */
+/* ========== 遥控命令码（Pi → MSPM0） ========== */
+
+#define CMD_MOTOR       0x30  /**< 电机差速: speed(int8), diff(int8) [-100,100] */
+#define CMD_BEAM        0x31  /**< 摆杆倾角: angle(int8) [-10,10] 度 */
+#define CMD_STOP         0x32  /**< 立即停止: 无载荷 */
+#define CMD_RESUME_LINE  0x2F  /**< 回到循迹: 无载荷 */
+
+#define REMOTE_MAX_SPEED_MM_S  2136.0f   /**< speed=100 时的线速度 */
+#define REMOTE_WATCHDOG_MS     500       /**< 无指令超时自动停车 */
+
+/* ========== 题目模式（要求2-7） ========== */
 
 typedef enum {
 	TASK_TRACK_ONLY     = 0,  // 要求2：纯循迹一圈，A点停车
@@ -25,6 +38,7 @@ typedef enum {
 	TASK_TRACK_BAL_AB,        // 要求4：循迹+O点平衡，AB段
 	TASK_TRACK_BAL_LAP_O,     // 要求5：循迹+O点平衡，一圈
 	TASK_TRACK_BAL_LAP_X,     // 要求6：循迹+任意位置平衡，一圈
+	TASK_REMOTE,              // 要求7：Pi 遥控
 	TASK_COUNT
 } TaskMode;
 
@@ -34,6 +48,7 @@ static const uint8_t *s_task_names[TASK_COUNT] = {
 	(uint8_t*)"4.Run+Bal AB",
 	(uint8_t*)"5.Run+Bal 1Lap",
 	(uint8_t*)"6.Run+Bal Any",
+	(uint8_t*)"7.Remote",
 };
 
 /* ========== 菜单状态 ========== */
@@ -55,6 +70,13 @@ static uint32_t s_last_time_ms;     // 上次运行用时 (ms)
 static uint32_t s_last_oled_ms;     // 上次 OLED 刷新时刻
 static uint8_t  s_time_buf[8];      // 格式化时间串 "MM:SS.T"
 
+/* ========== 遥控状态 ========== */
+
+static int8_t   s_rc_speed;       // Pi 下发的速度百分比 [-100, +100]
+static int8_t   s_rc_diff;        // Pi 下发的差速百分比 [-100, +100]
+static int8_t   s_rc_beam;        // Pi 下发的摆杆倾角 (°)
+static uint32_t s_rc_last_ms;     // 最近收到 Pi 指令的时间戳
+
 /**
  * @brief 将毫秒格式化为 "MM:SS.T" 写入 s_time_buf
  */
@@ -73,6 +95,68 @@ static void Format_Time(uint32_t ms)
 	s_time_buf[5] = '.';
 	s_time_buf[6] = '0' + tenth;
 	s_time_buf[7] = '\0';
+}
+
+/* ========== Pi 协议帧回调 ========== */
+
+/**
+ * @brief 收到 Pi 帧时由 Protocol_Update 同步调用
+ */
+static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
+{
+	s_rc_last_ms = Board_GetTickMs();
+
+	switch (cmd)
+	{
+	case CMD_MOTOR:
+		if (len >= 2)
+		{
+			s_rc_speed = (int8_t)payload[0];
+			s_rc_diff  = (int8_t)payload[1];
+
+			/* 非 REMOTE 模式下收到电机指令 → 自动切入 REMOTE */
+			if (s_selected_task != TASK_REMOTE)
+			{
+				s_selected_task = TASK_REMOTE;
+				/* 如果正在菜单/待启动，直接进入运行 */
+				if (s_state != STATE_RUNNING)
+				{
+					s_start_ms     = Board_GetTickMs();
+					s_last_oled_ms = 0;
+					s_state        = STATE_RUNNING;
+					s_oled_dirty   = true;
+				}
+			}
+		}
+		break;
+
+	case CMD_BEAM:
+		if (len >= 1)
+		{
+			s_rc_beam = (int8_t)payload[0];
+			Balance_SetAngle((float)s_rc_beam);
+		}
+		break;
+
+	case CMD_STOP:
+		Motor_Brake();
+		s_rc_speed = 0;
+		s_rc_diff  = 0;
+		Balance_SetAngle(0.0f);
+		break;
+
+	case CMD_RESUME_LINE:
+		Motor_Brake();
+		s_rc_speed     = 0;
+		s_rc_diff      = 0;
+		s_selected_task = TASK_TRACK_ONLY;
+		Tracking_Start();
+		s_start_ms     = Board_GetTickMs();
+		s_last_oled_ms = 0;
+		s_state        = STATE_RUNNING;
+		s_oled_dirty   = true;
+		break;
+	}
 }
 
 /* ========== OLED 显示 ========== */
@@ -129,7 +213,6 @@ static void Running_Show_First(void)
 
 /**
  * @brief 运行中更新时间：只重写数字，不清屏
- * @param elapsed_ms 当前已用时间 (ms)
  */
 static void Running_Show_Time(uint32_t elapsed_ms)
 {
@@ -159,7 +242,6 @@ static void Oled_Refresh(void)
 		{
 			uint32_t now_ms = Board_GetTickMs();
 
-			/* 首次进入：全屏绘制静态元素 */
 			if (s_oled_dirty)
 			{
 				s_oled_dirty   = false;
@@ -168,7 +250,6 @@ static void Oled_Refresh(void)
 				return;
 			}
 
-			/* 每 100ms：只重写时间数字 */
 			if (now_ms - s_last_oled_ms < 100)
 				return;
 			s_last_oled_ms = now_ms;
@@ -176,6 +257,29 @@ static void Oled_Refresh(void)
 		}
 		break;
 	}
+}
+
+/* ========== 遥控更新 ========== */
+
+static void Remote_Update(void)
+{
+	float left_speed;
+	float right_speed;
+
+	/* 看门狗：超时自动停车 */
+	if (Board_GetTickMs() - s_rc_last_ms > REMOTE_WATCHDOG_MS)
+	{
+		Motor_Brake();
+		return;
+	}
+
+	/* Pi 差速控制 */
+	left_speed  = (float)(s_rc_speed + s_rc_diff)
+	              * REMOTE_MAX_SPEED_MM_S / 100.0f;
+	right_speed = (float)(s_rc_speed - s_rc_diff)
+	              * REMOTE_MAX_SPEED_MM_S / 100.0f;
+
+	Motor_SetSpeedLR(left_speed, right_speed);
 }
 
 /* ========== 主函数 ========== */
@@ -187,12 +291,24 @@ int main(void)
 
 	Tracking_Init();
 
+	/* 初始化 Pi 协议 */
+	Protocol_Init(OnPiFrame, Board_GetPiUART());
+
+	/* 遥控初始值 */
+	s_rc_speed    = 0;
+	s_rc_diff     = 0;
+	s_rc_beam     = 0;
+	s_rc_last_ms  = Board_GetTickMs();
+
 	/* 显示初始菜单 */
 	s_oled_dirty = true;
 	Oled_Refresh();
 
 	while (1)
 	{
+		/* 收 Pi 帧 → 回调 OnPiFrame */
+		Protocol_Update();
+
 		/* ======== 按键 ======== */
 
 		switch (s_state)
@@ -252,6 +368,8 @@ int main(void)
 
 					if (s_selected_task == TASK_BAL_STATIC)
 						Balance_Stop();
+					else if (s_selected_task == TASK_REMOTE)
+						Motor_Brake();
 					else
 						Tracking_Stop();
 				}
@@ -262,7 +380,7 @@ int main(void)
 					if (Balance_IsDone())
 						stopped = true;
 				}
-				else
+				else if (s_selected_task != TASK_REMOTE)
 				{
 					if (!Tracking_IsRunning())
 						stopped = true;
@@ -299,6 +417,10 @@ int main(void)
 
 		case TASK_BAL_STATIC:
 			Balance_SeqUpdate();
+			break;
+
+		case TASK_REMOTE:
+			Remote_Update();
 			break;
 		}
 	}

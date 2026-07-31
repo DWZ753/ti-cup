@@ -64,6 +64,12 @@ void Balance_ChassisFF(float accel_m_s2);
 float Balance_GetAngle(void);
 
 /**
+ * @brief 直接设置摆杆倾角（遥控用，绕过 PD）
+ * @param angle_deg 目标倾角 (°)，钳位到 [-MAX, +MAX]
+ */
+void Balance_SetAngle(float angle_deg);
+
+/**
  * @brief 启动静态平衡序列（要求 3）
  * @note  车静止，执行球 O→+5cm→-5cm 开环时序
  */
