@@ -229,82 +229,91 @@ static void Running_Show_First(void)
 {
 	OLED_Clear();
 	OLED_ShowString(0, 0, s_task_names[s_selected_task], 8);
+	OLED_ShowString(0, 1, (uint8_t*)"Tgt:", 8);
 	OLED_ShowString(0, 7, (uint8_t*)"K2:Stop", 8);
 
 	Format_Time(0);
 	/* 16px 大字居中: 7 字符 x 8px = 56px, (128-56)/2 = 36 */
 	OLED_ShowString(36, 2, s_time_buf, 16);
 
-	/* 编码器测速 + FF 调试 */
-	OLED_ShowString(0, 4, (uint8_t*)"L:", 8);
-	OLED_ShowString(0, 5, (uint8_t*)"R:", 8);
-	OLED_ShowString(64, 4, (uint8_t*)"a:", 8);
-	OLED_ShowString(64, 5, (uint8_t*)"F:", 8);
-	OLED_ShowString(0, 6, (uint8_t*)"Pi:", 8);
+	/* FF 调试 + PID 分量 */
+	OLED_ShowString(0, 4, (uint8_t*)"a:", 8);
+	OLED_ShowString(64, 4, (uint8_t*)"F:", 8);
+	OLED_ShowString(0, 5, (uint8_t*)"P:", 8);
+	OLED_ShowString(64, 5, (uint8_t*)"D:", 8);
+	OLED_ShowString(0, 6, (uint8_t*)"I:", 8);
 }
 
 /**
- * @brief 运行中更新时间 + 编码器速度
+ * @brief 运行中刷新 OLED：时间、FF、I 项、目标位置、Pi 位置
  */
 static void Running_Show_Time(uint32_t elapsed_ms)
 {
 	Format_Time(elapsed_ms);
 	OLED_ShowString(36, 2, s_time_buf, 16);
 
-	/* 刷新编码器速度（带正负号，OLED_ShowNum 只接受无符号数） */
-	{
-		int32_t spd;
-		uint8_t sign;
-
-		spd  = (int32_t)Motor_GetFilteredSpeed1();
-		sign = (spd >= 0) ? '+' : '-';
-		if (spd < 0) spd = -spd;
-		OLED_ShowChar(16, 4, sign, 8);
-		OLED_ShowNum(24, 4, (uint32_t)spd, 4, 8);
-
-		spd  = (int32_t)Motor_GetFilteredSpeed2();
-		sign = (spd >= 0) ? '+' : '-';
-		if (spd < 0) spd = -spd;
-		OLED_ShowChar(16, 5, sign, 8);
-		OLED_ShowNum(24, 5, (uint32_t)spd, 4, 8);
-	}
-
-	/* FF 调试：加速度 (cm/s²) + 倾角 (0.1°) */
+	/* FF + PID 分量 */
 	{
 		int32_t val;
 		uint8_t sign;
 
-		val  = (int32_t)(s_ff_accel * 100.0f);  // m/s² → cm/s²
+		/* 加速度 (cm/s²) */
+		val  = (int32_t)(s_ff_accel * 100.0f);
+		sign = (val >= 0) ? '+' : '-';
+		if (val < 0) val = -val;
+		OLED_ShowChar(16, 4, sign, 8);
+		OLED_ShowNum(24, 4, (uint32_t)val, 3, 8);
+
+		/* FF 倾角 (0.1°) */
+		val  = (int32_t)(s_ff_angle * 10.0f);
 		sign = (val >= 0) ? '+' : '-';
 		if (val < 0) val = -val;
 		OLED_ShowChar(76, 4, sign, 8);
 		OLED_ShowNum(84, 4, (uint32_t)val, 3, 8);
 
-		val  = (int32_t)(s_ff_angle * 10.0f);   // ° → 0.1°
+		/* P 项 (0.1°) */
+		val  = (int32_t)(Balance_GetP() * 10.0f);
 		sign = (val >= 0) ? '+' : '-';
 		if (val < 0) val = -val;
-		OLED_ShowChar(76, 5, sign, 8);
-		OLED_ShowNum(84, 5, (uint32_t)val, 3, 8);
+		OLED_ShowChar(16, 5, sign, 8);
+		OLED_ShowNum(24, 5, (uint32_t)val, 3, 8);
+
+		/* D 项 (0.1°) */
+		val  = (int32_t)(Balance_GetD() * 10.0f);
+		sign = (val >= 0) ? '+' : '-';
+		if (val < 0) val = -val;
+		OLED_ShowChar(80, 5, sign, 8);
+		OLED_ShowNum(88, 5, (uint32_t)val, 3, 8);
+
+		/* I 项 (0.01°) */
+		val  = (int32_t)(Balance_GetIAccum() * 100.0f);
+		sign = (val >= 0) ? '+' : '-';
+		if (val < 0) val = -val;
+		OLED_ShowChar(16, 6, sign, 8);
+		OLED_ShowNum(24, 6, (uint32_t)val, 4, 8);
 	}
-		/* Pi 球位置调试 */
+		/* 目标位置 */
+		{
+			int32_t tgt = (int32_t)Balance_GetTarget();
+			uint8_t sign;
+
+			sign = (tgt >= 0) ? '+' : '-';
+			if (tgt < 0) tgt = -tgt;
+			OLED_ShowChar(32, 1, sign, 8);
+			OLED_ShowNum(40, 1, (uint32_t)tgt, 4, 8);
+			OLED_ShowString(72, 1, (uint8_t*)"mm", 8);
+		}
+
+			/* Pi 球位置调试 */
 		{
 		int32_t pos = (int32_t)s_debug_ball_pos;
 		uint8_t sign;
-		uint32_t age_ms;
 
 		sign = (pos >= 0) ? '+' : '-';
 		if (pos < 0) pos = -pos;
-		OLED_ShowChar(24, 6, sign, 8);
-		OLED_ShowNum(32, 6, (uint32_t)pos, 4, 8);
-		OLED_ShowString(64, 6, (uint8_t*)"mm", 8);
-		OLED_ShowChar(88, 6, 'C', 8);
-		OLED_ShowChar(96, 6, '0' + s_debug_ball_conf, 8);
-
-		/* 诊断：距上次 Pi 帧的毫秒数，>500ms = 链路断 */
-		age_ms = Board_GetTickMs() - s_rc_last_ms;
-		if (age_ms > 999) age_ms = 999;
-		OLED_ShowChar(104, 6, 'D', 8);
-		OLED_ShowNum(112, 6, age_ms, 3, 8);
+		OLED_ShowChar(64, 6, sign, 8);
+		OLED_ShowNum(72, 6, (uint32_t)pos, 4, 8);
+		OLED_ShowString(104, 6, (uint8_t*)"mm", 8);
 	}
 }
 

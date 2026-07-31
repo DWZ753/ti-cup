@@ -20,11 +20,14 @@
 static float    s_angle;             // 当前摆杆倾角指令 (°)
 static float    s_target_pos;        // 球目标位置 (mm)
 static float    s_ball_pos;          // 低通后球位置 (mm)
+static float    s_ball_pos_raw;      // 原始球位置（序列阈值用，无滞后）
 static float    s_ball_vel;          // 低通后球速度 (mm/s)
 static float    s_last_ball_pos;     // 上次球位置 (速度估计用)
 static float    s_ff_accel;          // 待叠加底盘 FF 倾角 (°)
 static uint32_t s_last_update_ms;    // 上次 Update() 时间戳
 	static float    s_i_accum;           // I 项积分器 (消除稳态偏置)
+	static float    s_angle_p;           // P 项输出 (°)，调试用
+	static float    s_angle_d;           // D 项输出 (°)，调试用
 	static float    s_last_dt;           // 上次 dt (I 项用)
 static uint8_t  s_confidence;        // 最近一次置信度
 
@@ -36,7 +39,6 @@ static const struct {
 } s_seq_table[] = {
 	{ STATIC_SEQ_TARGET_0, STATIC_SEQ_DWELL_0 },
 	{ STATIC_SEQ_TARGET_1, STATIC_SEQ_DWELL_1 },
-	{ STATIC_SEQ_TARGET_2, STATIC_SEQ_DWELL_2 },
 };
 
 #define S_SEQ_LEN  (sizeof(s_seq_table) / sizeof(s_seq_table[0]))
@@ -50,19 +52,19 @@ static bool     s_seq_reached;
 /* ========== 内部控制 ========== */
 
 /**
- * @brief 设置摆杆倾角（含钳位 + ZDT QPos 相对运动发送）
- * @param angle_deg 目标倾角 (°)，正=右倾，负=左倾
+ * @brief 设置摆杆倾角（含钳位 + ZDT Pos 绝对位置发送）
+ * @param angle_deg 水平相对倾角 (°)，正=右倾，负=左倾，0°=水平
+ * @note  使用 Pos_Control(raF=1) 绝对位置模式，
+ *        电机直接走到目标脉冲数，不依赖 QPos 历史累积。
  */
 static void Set_Angle(float angle_deg)
 {
-	float   motor_angle;
-	float   delta_deg;
-	int32_t delta_pulses;
+	float    motor_angle;
+	int32_t  target_pulses;
+	uint8_t  dir;
+	uint32_t clk;
 
-	/*
-	 * 坐标转换：水平相对 (0°=水平) → 电机绝对 (0°=回零硬停位)
-	 * s_angle 始终跟踪电机坐标，QPos 相对模式在此坐标上累积。
-	 */
+	/* 坐标转换：水平相对 → 电机绝对坐标 (0°=回零硬停位) */
 	motor_angle = angle_deg + BALANCE_HOME_OFFSET_DEG;
 
 	/* 电机坐标系钳位（HOME_OFFSET ± MAX_ANGLE） */
@@ -76,15 +78,27 @@ static void Set_Angle(float angle_deg)
 			motor_angle = min_motor;
 	}
 
-	/* QPos 相对上次目标运动 */
-	delta_deg    = motor_angle - s_angle;
-	delta_pulses = (int32_t)(delta_deg * BALANCE_PULSE_PER_DEG);
+	/* 跳过重复目标 */
+	if (motor_angle == s_angle)
+		return;
 
-	if (delta_pulses != 0)
+	target_pulses = (int32_t)(motor_angle * BALANCE_PULSE_PER_DEG);
+	if (target_pulses >= 0)
 	{
-		ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, delta_pulses);
-		s_angle = motor_angle;
+		dir = 0;
+		clk = (uint32_t)target_pulses;
 	}
+	else
+	{
+		dir = 1;
+		clk = (uint32_t)(-target_pulses);
+	}
+
+	/* 绝对位置控制：电机走到 clk 脉冲位置，raF=1 表示绝对坐标 */
+	ZDT_Motor_Pos_Control(BALANCE_MOTOR_ID, dir,
+	                      BALANCE_WORK_VEL, 5,
+	                      clk, 1, false);
+	s_angle = motor_angle;
 }
 
 /* ========== 初始化 ========== */
@@ -189,6 +203,7 @@ void Balance_Init(void)
 	s_angle          = BALANCE_HOME_OFFSET_DEG;
 	s_target_pos     = 0.0f;
 	s_ball_pos       = 0.0f;
+	s_ball_pos_raw   = 0.0f;
 	s_ball_vel       = 0.0f;
 	s_last_ball_pos  = 0.0f;
 	s_ff_accel       = 0.0f;
@@ -204,6 +219,27 @@ void Balance_Init(void)
 void Balance_SetTarget(float pos_mm)
 {
 	s_target_pos = pos_mm;
+	s_i_accum    = 0.0f;
+}
+
+float Balance_GetTarget(void)
+{
+	return s_target_pos;
+}
+
+float Balance_GetIAccum(void)
+{
+	return s_i_accum;
+}
+
+float Balance_GetP(void)
+{
+	return s_angle_p;
+}
+
+float Balance_GetD(void)
+{
+	return s_angle_d;
 }
 
 /* ========== PD 控制更新（Pi @50Hz 调用） ========== */
@@ -221,6 +257,9 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	/* 丢球 → 冻结角度，不更新 PD */
 	if (confidence == 0)
 		return;
+
+	/* 保存原始位置（序列阈值检测用，避免滤波滞后） */
+	s_ball_pos_raw = ball_pos_mm;
 
 	/* 位置低通滤波 */
 	s_ball_pos = s_ball_pos * (1.0f - POS_FILTER_ALPHA)
@@ -266,26 +305,29 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 		if (abs_err < BALANCE_DEADBAND_MM)
 			angle_d *= abs_err / BALANCE_DEADBAND_MM;
 	}
+
+	/* 保存 PID 分量供调试显示 */
+	s_angle_p = angle_p;
+	s_angle_d = angle_d;
 	angle_cmd = angle_p - angle_d;
 		/*
 		 * I 项：积分消除恒定偏置（管子不水平、机械不对称）。
-		 * Anti-windup：只在未饱和时累积，且 I 项 ±5° 硬限幅。
+		 * 不再以 PD 输出判断饱和——D 项 KD·vel 在球移动时
+		 * 轻松超 ±MAX_ANGLE，导致 I 永不被累积。
+		 * 仅用 I 项 ±5° 硬限幅防 deep windup。
 		 */
 		{
 		float dt = s_last_dt;
 
 		if (dt > 0.001f && dt < 0.1f)
 		{
-			/* PD (不含 FF) 未饱和 → 累积积分 */
-			if (angle_cmd > -BALANCE_MAX_ANGLE_DEG
-			    && angle_cmd < BALANCE_MAX_ANGLE_DEG)
-			{
-				s_i_accum += BALANCE_KI * pos_error * dt;
-			}
+			s_i_accum += BALANCE_KI * pos_error * dt;
 
 			/* I 项硬限幅 */
-			if (s_i_accum > 5.0f)  s_i_accum = 5.0f;
-			if (s_i_accum < -5.0f) s_i_accum = -5.0f;
+			if (s_i_accum > BALANCE_I_CLAMP_DEG)
+				s_i_accum = BALANCE_I_CLAMP_DEG;
+			if (s_i_accum < -BALANCE_I_CLAMP_DEG)
+				s_i_accum = -BALANCE_I_CLAMP_DEG;
 		}
 		}
 
@@ -343,7 +385,10 @@ void Balance_Start(void)
 
 	/* 设第一个目标位置 */
 	if (S_SEQ_LEN > 0)
+	{
 		s_target_pos = s_seq_table[0].target_mm;
+		s_i_accum    = 0.0f;
+	}
 }
 
 /**
@@ -366,7 +411,7 @@ void Balance_SeqUpdate(void)
 	/* 球到达目标？ */
 	if (!s_seq_reached)
 	{
-		err = s_ball_pos - target;
+		err = s_ball_pos_raw - target;
 		if (err < 0.0f) err = -err;
 		if (err < BALANCE_SEQ_THRESHOLD_MM)
 		{
@@ -386,12 +431,14 @@ void Balance_SeqUpdate(void)
 		if (s_seq_step >= S_SEQ_LEN)
 		{
 			s_target_pos  = 0.0f;
+			s_i_accum     = 0.0f;
 			s_seq_running = false;
 			s_seq_done    = true;
 			return;
 		}
 
 		s_target_pos = s_seq_table[s_seq_step].target_mm;
+		s_i_accum    = 0.0f;
 	}
 }
 

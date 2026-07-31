@@ -36,11 +36,13 @@
 /* ========== 球位置 PD ========== */
 
 /* °/mm，位置误差→倾角 */
-#define BALANCE_KP                0.15f
+#define BALANCE_KP                0.40f
 /* °/(mm·s)，I 项增益→积分消除静态偏差 */
-#define BALANCE_KI                0.01f
+#define BALANCE_KI                0.15f
 /* °/(mm/s)，球速→反向倾角 */
-#define BALANCE_KD                0.25f
+#define BALANCE_KD                0.50f
+/* °，I 项积分器硬限幅（防 windup） */
+#define BALANCE_I_CLAMP_DEG        50.0f
 
 /* ========== 底盘前馈 ========== */
 
@@ -60,8 +62,14 @@
 
 /* ========== 低通滤波器 ========== */
 
-#define POS_FILTER_ALPHA          0.3f   // 位置（越大越灵敏）
-#define VEL_FILTER_ALPHA          0.2f   // 速度（越大噪声越大）
+/*
+ * 一阶低通: out = out·(1-α) + in·α
+ *   α → 0: 强滤波，响应慢，滞后大（如 0.1~0.3）
+ *   α → 1: 弱滤波/直通，响应快，噪声大
+ *   α = 1.0: 完全直通，无滤波（调试时用）
+ */
+#define POS_FILTER_ALPHA          1.0f   // 位置低通
+#define VEL_FILTER_ALPHA          1.0f   // 速度低通（噪声敏感，正式跑建议 0.1~0.3）
 
 /* 死区 (mm)：球在目标 ± 此范围内时 D 项衰减，防噪声抖动 */
 #define BALANCE_DEADBAND_MM        2.0f
@@ -77,16 +85,14 @@
  * 球到达目标 ± SEQ_THRESHOLD 后开始停留计时，到时推进下一步。
  * 全部步骤完成后自动结束。正=右，负=左。
  */
-#define STATIC_SEQ_LEN            3
+#define STATIC_SEQ_LEN            2
 
-#define STATIC_SEQ_TARGET_0       0.0f    // 起始 O 点
-#define STATIC_SEQ_DWELL_0        500
-#define STATIC_SEQ_TARGET_1       50.0f   // +5cm
+#define STATIC_SEQ_TARGET_0       50.0f   // +5cm
+#define STATIC_SEQ_DWELL_0        1000
+#define STATIC_SEQ_TARGET_1       -50.0f  // -5cm
 #define STATIC_SEQ_DWELL_1        1000
-#define STATIC_SEQ_TARGET_2       -50.0f  // -5cm
-#define STATIC_SEQ_DWELL_2        1000
 
 /* 球到达目标判定阈值 (mm) */
-#define BALANCE_SEQ_THRESHOLD_MM   5.0f
+#define BALANCE_SEQ_THRESHOLD_MM   10.0f
 
 #endif /* __BALANCE_CONFIG_H__ */
