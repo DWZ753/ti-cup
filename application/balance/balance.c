@@ -226,6 +226,9 @@ void Balance_Init(void)
 	s_vel_frame_count = 0;
 	s_vel_dt_sum      = 0.0f;
 	s_i_accum        = 0.0f;
+	/* 显式命令摆杆到水平位，确认坐标系统正确 */
+	Set_Angle(0.0f);
+
 	/* 激活闭环就绪：目标 O 点，等待 Pi 帧接管 */
 	Balance_Enable();
 }
@@ -411,11 +414,45 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	else if (angle_p < -s_p_limit)
 		angle_p = -s_p_limit;
 
-	/* 4b. D 项（速度阻尼）+ 死区衰减 */
+	/* 4b. D 项（速度阻尼）+ 死区衰减 + 刹车渐进 */
 	angle_d = s_kd * s_ball_vel;
 
 	if (abs_err < s_deadband)
 		angle_d *= (abs_err / s_deadband);
+
+	/*
+	 * 刹车渐进：球滚向目标时 D 会反向抵消 P 的拉力，导致球在半路停下。
+	 * 解决方案：滚向目标时按距离衰减 D（远→弱，近→强），
+	 * 滚离目标时全 D 全力刹车。
+	 */
+	{
+		bool toward = (pos_error > 0.0f && s_ball_vel < 0.0f)
+		           || (pos_error < 0.0f && s_ball_vel > 0.0f);
+		float d_scale;
+
+		if (!toward)
+		{
+			d_scale = 1.0f;                    /* 远离 → 全 D */
+		}
+		else if (abs_err > BRAKE_START_ERROR_MM)
+		{
+			d_scale = BRAKE_FAR_SCALE;         /* 远 → 弱 D */
+		}
+		else if (abs_err > BRAKE_FULL_ERROR_MM)
+		{
+			/* 中段线性过渡 */
+			d_scale = BRAKE_FAR_SCALE
+			        + (1.0f - BRAKE_FAR_SCALE)
+			          * (BRAKE_START_ERROR_MM - abs_err)
+			          / (BRAKE_START_ERROR_MM - BRAKE_FULL_ERROR_MM);
+		}
+		else
+		{
+			d_scale = 1.0f;                    /* 近 → 全 D */
+		}
+
+		angle_d *= d_scale;
+	}
 
 	if (angle_d > s_d_limit)
 		angle_d = s_d_limit;

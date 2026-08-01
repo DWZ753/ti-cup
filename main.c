@@ -385,7 +385,18 @@ UI_Init();
 		}
 
 		/* ======== OLED 刷新 ======== */
-		UI_Refresh(s_state, s_selected_task, Board_GetTickMs() - s_start_ms, s_last_time_ms, NULL);
+		{
+				UI_DebugValues dbg = {
+					.ff_accel = Balance_GetFFAccel(),
+					.ff_angle = Balance_GetFFAccel() * FF_ACCEL_GAIN,
+					.pid_p = Balance_GetP(),
+					.pid_d = Balance_GetD(),
+					.pid_i = Balance_GetIAccum(),
+					.target_mm = Balance_GetTarget(),
+					.pi_ball_pos = s_debug_ball_pos,
+				};
+				UI_Refresh(s_state, s_selected_task, Board_GetTickMs() - s_start_ms, s_last_time_ms, &dbg);
+			}
 
 		/* ======== 任务更新 ======== */
 		if (s_state != STATE_RUNNING)

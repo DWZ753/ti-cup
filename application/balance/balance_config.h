@@ -105,6 +105,17 @@
  */
 #define BALANCE_DEADBAND_MM       2.0f
 
+/* ========== D 项刹车渐进（Brake Fading） ========== */
+
+/*
+ * 球滚向目标时 D 项会刹掉 P 产生的向心速度，导致球停在半路。
+ * 解决方案：球滚向目标时根据距离衰减 D 项（远处弱 D → 让球自由加速，
+ * 近处全 D → 精确制动）。球远离目标时始终全 D（全力刹车）。
+ */
+#define BRAKE_START_ERROR_MM      40.0f   /**< 此距离以上 D×0.2 */
+#define BRAKE_FULL_ERROR_MM       8.0f    /**< 此距离以下 D×1.0 */
+#define BRAKE_FAR_SCALE           0.2f    /**< 远处 D 衰减系数 */
+
 /* ========== 滤波 ========== */
 
 /**
@@ -160,7 +171,7 @@
 #define STATIC_SEQ_DWELL_1        1500
 
 /* 球到达目标判定阈值 (mm) */
-#define BALANCE_SEQ_THRESHOLD_MM   5.0f
+#define BALANCE_SEQ_THRESHOLD_MM   10.0f   // 要求3允许±1cm误差
 
 /* ========== 开环角度序列（要求3 Pi 离线降级方案） ========== */
 
