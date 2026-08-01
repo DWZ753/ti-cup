@@ -124,4 +124,11 @@ void Balance_Start(void);
  */
 void Balance_SeqUpdate(void);
 
+/**
+ * @brief 查询静态平衡序列是否完成
+ * @retval true  已完成
+ * @retval false 执行中或未启动
+ */
+bool Balance_IsDone(void);
+
 #endif /* __BALANCE_H__ */

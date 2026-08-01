@@ -647,7 +647,11 @@ int main(void)
 				s_last_ff_ms         = 0;
 			}
 
-				/* 通知 Pi 任务开始 */
+				/* 静态平衡任务：启动序列 */
+			if (s_selected_task == TASK_BAL_STATIC)
+				Balance_Start();
+
+			/* 通知 Pi 任务开始 */
 			{
 				uint8_t tid = (uint8_t)s_selected_task;
 				Protocol_SendFrame(CMD_TASK_START, &tid, 1);
@@ -738,6 +742,7 @@ int main(void)
 			break;
 
 		case TASK_BAL_STATIC:
+				Balance_SeqUpdate();
 				break;
 
 			case TASK_REMOTE:

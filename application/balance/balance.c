@@ -33,6 +33,25 @@ static uint8_t  s_confidence;                   // 最近一次置信度
 /* 时间戳 */
 static uint32_t s_last_update_ms;
 
+/* ========== 静态平衡序列（要求 3） ========== */
+
+static const struct {
+	float    target_mm;
+	uint16_t dwell_ms;
+} s_seq_table[] = {
+	{ STATIC_SEQ_TARGET_0, STATIC_SEQ_DWELL_0 },
+	{ STATIC_SEQ_TARGET_1, STATIC_SEQ_DWELL_1 },
+};
+
+#define S_SEQ_LEN  (sizeof(s_seq_table) / sizeof(s_seq_table[0]))
+
+static float    s_ball_pos_raw;      // 原始球位置（序列阈值用，无滞后）
+static uint8_t  s_seq_step;
+static uint32_t s_seq_tick;
+static bool     s_seq_running;
+static bool     s_seq_done;
+static bool     s_seq_reached;
+
 /* ========== 可调参数（运行时副本，Pi 可在线修改） ========== */
 
 static float s_kp          = BALANCE_KP;
@@ -273,6 +292,7 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	now_ms = Board_GetTickMs();
 
 	/* ---- 1. 位置低通滤波 ---- */
+	s_ball_pos_raw = ball_pos_mm;  // 原始值（序列阈值用）
 	s_ball_pos = s_ball_pos * (1.0f - s_pos_alpha)
 	           + ball_pos_mm    * s_pos_alpha;
 
@@ -379,6 +399,73 @@ float Balance_GetAngle(void)
 void Balance_SetAngle(float angle_deg)
 {
 	Set_Angle(angle_deg);
+}
+
+/* ========== 静态平衡序列（要求 3） ========== */
+
+void Balance_Start(void)
+{
+	s_seq_step    = 0;
+	s_seq_tick    = Board_GetTickMs();
+	s_seq_running = true;
+	s_seq_done    = false;
+	s_seq_reached = false;
+
+	if (S_SEQ_LEN > 0)
+	{
+		s_target_pos = s_seq_table[0].target_mm;
+		s_i_accum    = 0.0f;
+	}
+}
+
+void Balance_SeqUpdate(void)
+{
+	uint32_t now_ms;
+	float    err;
+	float    target;
+
+	if (!s_seq_running)
+		return;
+
+	now_ms = Board_GetTickMs();
+	target = s_seq_table[s_seq_step].target_mm;
+
+	/* 球到达目标？用原始位置避免滤波滞后 */
+	if (!s_seq_reached)
+	{
+		err = s_ball_pos_raw - target;
+		if (err < 0.0f) err = -err;
+		if (err < BALANCE_SEQ_THRESHOLD_MM)
+		{
+			s_seq_reached = true;
+			s_seq_tick    = now_ms;
+		}
+		return;
+	}
+
+	/* 到达后停留计时 → 推进下一步 */
+	if (now_ms - s_seq_tick >= s_seq_table[s_seq_step].dwell_ms)
+	{
+		s_seq_step++;
+		s_seq_reached = false;
+
+		if (s_seq_step >= S_SEQ_LEN)
+		{
+			s_target_pos  = 0.0f;
+			s_i_accum     = 0.0f;
+			s_seq_running = false;
+			s_seq_done    = true;
+			return;
+		}
+
+		s_target_pos = s_seq_table[s_seq_step].target_mm;
+		s_i_accum    = 0.0f;
+	}
+}
+
+bool Balance_IsDone(void)
+{
+	return s_seq_done;
 }
 
 /* ========== 停止 ========== */

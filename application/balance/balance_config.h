@@ -145,6 +145,23 @@
  */
 #define FF_ACCEL_FILTER           0.5f
 
+/* ========== 静态平衡序列（要求3） ========== */
+
+/*
+ * 球目标位置(mm)，到达后停留(ms)。
+ * 球进入目标 ± SEQ_THRESHOLD 后开始停留计时，到时推进下一步。
+ * 全部步骤完成后自动结束。正=右，负=左。
+ */
+#define STATIC_SEQ_LEN            2
+
+#define STATIC_SEQ_TARGET_0       50.0f   // +5cm
+#define STATIC_SEQ_DWELL_0        1500
+#define STATIC_SEQ_TARGET_1       -50.0f  // -5cm
+#define STATIC_SEQ_DWELL_1        1500
+
+/* 球到达目标判定阈值 (mm) */
+#define BALANCE_SEQ_THRESHOLD_MM   5.0f
+
 /* ========== 通信 ========== */
 
 #define PI_TIMEOUT_MS             200
