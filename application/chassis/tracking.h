@@ -33,5 +33,8 @@ void  Tracking_Start(void);                             // 启动循迹（复位
 void  Tracking_Stop(void);                              // 停车（刹车 + 舵机回中 + PID 复位）
 bool  Tracking_IsRunning(void);                         // 查询是否在循迹中
 void  Tracking_Update(uint32_t now_ms, uint8_t mask);   // 自适应速度 + 循迹 PID + 停车检测
+void  Tracking_SetSpeedParams(float straight, float arc, float diff_gain);  // 运行时切换速度/差速参数
+void  Tracking_SetStopOnCurve(bool enable);                                  // AB段：首次转弯自动停车
+void  Tracking_SetSpeedRamp(bool enable);                                    // 渐加速/渐减速开关
 
 #endif

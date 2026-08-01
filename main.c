@@ -18,6 +18,7 @@
 #include "oled.h"
 #include "balance.h"
 #include "balance_config.h"
+#include "chassis_config.h"
 #include "protocol.h"
 #include "motor.h"
 #include "zdt_motor.h"
@@ -82,6 +83,7 @@ static uint32_t s_rc_last_ms;     // 最近收到 Pi 指令的时间戳
 	/* ========== Pi 球位置调试 ========== */
 	static int16_t  s_debug_ball_pos;  // Pi 发来的球位置 (mm)
 	static uint8_t  s_debug_ball_conf; // Pi 发来的置信度 0/1/2
+	static bool     s_task6_capture;    // 任务6：等待捕获首个球位置
 
 /* ========== 底盘前馈 ========== */
 
@@ -156,6 +158,14 @@ static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 		{
 			int16_t pos_mm = (int16_t)(((uint16_t)payload[0] << 8) | payload[1]);
 			uint8_t conf   = payload[2];
+
+			/* 任务6：捕获启动时球位置作为目标 */
+			if (s_task6_capture && conf > 0)
+			{
+				Balance_SetTarget((float)pos_mm);
+				s_task6_capture = false;
+			}
+
 			/* 闭环 PD 控制 */
 			Balance_Update((float)pos_mm, 0.0f, conf);
 			s_debug_ball_pos = pos_mm;
@@ -175,6 +185,9 @@ static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 		s_rc_speed     = 0;
 		s_rc_diff      = 0;
 		s_selected_task = TASK_TRACK_ONLY;
+		Tracking_SetSpeedParams(TASK2_SPEED_STRAIGHT,
+		                        TASK2_SPEED_ARC,
+		                        TASK2_DIFF_GAIN);
 		Tracking_Start();
 		s_start_ms     = Board_GetTickMs();
 		s_last_oled_ms = 0;
@@ -426,12 +439,6 @@ static void ChassisFF_Update(void)
 
 	s_ff_accel = accel_filtered;
 
-<<<<<<< HEAD
-	/* 统一走 Balance_ChassisFF → Balance_Update 叠加输出。
-	   Pi 在线/离线都走同一路径：加速度估计 → FF 累加器 → PD 输出。 */
-	Balance_ChassisFF(accel_filtered);
-	s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
-=======
 	/*
 	 * Pi 闭环模式：加速度馈入 Balance_Update() 的 FF 累加器，
 	 * 由 PD 控制律统一输出 QPos_Control。
@@ -488,7 +495,6 @@ ff_apply:
 		                      BALANCE_WORK_VEL, 5,
 		                      clk, 1, false);
 	}
->>>>>>> f978f42be76382ac9f7c8c321f9f48e7c114aadb
 }
 
 /* ========== 主函数 ========== */
@@ -554,6 +560,47 @@ int main(void)
 
 			if (s_selected_task != TASK_BAL_STATIC)
 			{
+				switch (s_selected_task)
+				{
+				case TASK_TRACK_ONLY:
+					Tracking_SetSpeedParams(TASK2_SPEED_STRAIGHT,
+					                        TASK2_SPEED_ARC,
+					                        TASK2_DIFF_GAIN);
+					Tracking_SetStopOnCurve(false);
+					Tracking_SetSpeedRamp(false);     /* 任务2无需渐加/减速 */
+					break;
+
+				case TASK_TRACK_BAL_AB:
+					Tracking_SetSpeedParams(TASK4_SPEED_STRAIGHT,
+					                        TASK4_SPEED_ARC,
+					                        TASK4_DIFF_GAIN);
+					Tracking_SetStopOnCurve(true);    /* 首次转弯停车 */
+					Balance_SetTarget(0.0f);
+					Tracking_SetSpeedRamp(true);
+					break;
+
+				case TASK_TRACK_BAL_LAP_O:
+					Tracking_SetSpeedParams(TASK5_SPEED_STRAIGHT,
+					                        TASK5_SPEED_ARC,
+					                        TASK5_DIFF_GAIN);
+					Tracking_SetStopOnCurve(false);   /* 停车线停止 */
+					Tracking_SetSpeedRamp(true);
+					Balance_SetTarget(0.0f);          /* 目标=中心 */
+					break;
+
+				case TASK_TRACK_BAL_LAP_X:
+					Tracking_SetSpeedParams(TASK6_SPEED_STRAIGHT,
+					                        TASK6_SPEED_ARC,
+					                        TASK6_DIFF_GAIN);
+					Tracking_SetSpeedRamp(true);
+					Tracking_SetStopOnCurve(false);   /* 停车线停止 */
+					s_task6_capture = true;           /* 等 Pi 帧捕获球位置 */
+					break;
+
+				default:
+					break;
+				}
+
 				Tracking_Start();
 				s_last_chassis_speed = 0.0f;
 				s_last_ff_ms         = 0;
@@ -577,6 +624,10 @@ int main(void)
 						Balance_Stop();
 					else if (s_selected_task == TASK_REMOTE)
 						Motor_Brake();
+					else if (s_selected_task >= TASK_TRACK_BAL_AB)
+					{
+						Tracking_Stop();
+					}
 					else
 						Tracking_Stop();
 				}
@@ -591,6 +642,20 @@ int main(void)
 				if (stopped)
 				{
 					s_last_time_ms = Board_GetTickMs() - s_start_ms;
+
+					/* 任务4/5/6：摆杆回水平 */
+					if (s_selected_task >= TASK_TRACK_BAL_AB)
+					{
+						Balance_SetAngle(0.0f);
+					}
+
+					/* 通知 Pi 任务完成 + 耗时(ms, 大端) */
+					{
+						uint8_t msg[] = { (uint8_t)(s_last_time_ms >> 8),
+						                  (uint8_t)(s_last_time_ms & 0xFF) };
+						Protocol_SendFrame(0x2E, msg, 2);
+					}
+
 					s_state        = STATE_READY;
 					s_oled_dirty   = true;
 				}

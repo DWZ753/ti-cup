@@ -90,4 +90,16 @@ void Balance_SetAngle(float angle_deg);
  */
 void Balance_Stop(void);
 
+/**
+ * @brief 启动静态平衡序列（要求3）
+ * @note  球依次移动到 ±5cm 位置，每步停留指定时间
+ */
+void Balance_Start(void);
+
+/**
+ * @brief 静态平衡序列状态机（要求3）
+ * @note  每主循环周期调用，自动推进序列步骤
+ */
+void Balance_SeqUpdate(void);
+
 #endif /* __BALANCE_H__ */

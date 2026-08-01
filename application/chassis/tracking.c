@@ -17,6 +17,19 @@ static int32_t        s_tracking_last_servo;   // slew rate 历史
 static uint32_t       s_last_tracking;         // 上次循迹时间
 static bool           s_running;               // 是否循迹中
 
+/* 运行时速度/差速参数（初始化为默认值，可通过 Tracking_SetSpeedParams 切换） */
+static float s_speed_straight = TASK5_SPEED_STRAIGHT;
+static float s_speed_arc      = TASK5_SPEED_ARC;
+static float s_diff_gain      = TASK5_DIFF_GAIN;
+
+/* 速度斜坡 */
+static float    s_current_speed;     // 当前斜坡速度 (mm/s)
+static uint32_t s_last_ramp_ms;      // 上次斜坡计算时间
+static bool     s_speed_ramp = true; // 渐加速/渐减速开关（默认开）
+
+/* AB段：首次转弯自动停车 */
+static bool  s_stop_on_curve  = false;
+
 /* ========== 位置解算 ========== */
 
 /**
@@ -84,6 +97,8 @@ void Tracking_Init(void)
 	s_running             = false;
 	s_tracking_last_servo = 0;
 	s_last_tracking       = 0;
+	s_current_speed       = 0.0f;
+	s_last_ramp_ms        = 0;
 }
 
 /**
@@ -95,6 +110,8 @@ void Tracking_Start(void)
 	PID_SetTarget(&s_tracking_pid, 0.0f);
 	s_tracking_last_servo = 0;
 	s_last_tracking       = Board_GetTickMs();
+	s_current_speed       = 0.0f;
+	s_last_ramp_ms        = Board_GetTickMs();
 	s_running             = true;
 }
 
@@ -120,6 +137,37 @@ bool Tracking_IsRunning(void)
 }
 
 /**
+ * @brief 运行时切换速度/差速参数
+ * @param straight  直道速度 (mm/s)
+ * @param arc       弯道速度 (mm/s)
+ * @param diff_gain 差速增益 (mm/s per servo unit)
+ */
+void Tracking_SetSpeedParams(float straight, float arc, float diff_gain)
+{
+	s_speed_straight = straight;
+	s_speed_arc      = arc;
+	s_diff_gain      = diff_gain;
+}
+
+/**
+ * @brief AB段模式：首次转弯自动停车
+ * @param enable true=检测到首次转弯时自动 Tracking_Stop()
+ */
+void Tracking_SetStopOnCurve(bool enable)
+{
+	s_stop_on_curve = enable;
+}
+
+/**
+ * @brief 渐加速/渐减速开关
+ * @param enable true=速度斜坡生效，false=直接设目标速度
+ */
+void Tracking_SetSpeedRamp(bool enable)
+{
+	s_speed_ramp = enable;
+}
+
+/**
  * @brief 循迹主更新函数，每主循环周期调用一次
  *
  * 内部按需执行三项任务：
@@ -135,19 +183,56 @@ void Tracking_Update(uint32_t now_ms, uint8_t mask)
 	if (!s_running)
 		return;
 
-	/* ======== 直道/弯道自适应速度 ======== */
+	/* ======== 直道/弯道自适应速度 + 渐加/减速斜坡 ======== */
 	{
 		int32_t abs_servo = (s_tracking_last_servo >= 0)
 		                    ? s_tracking_last_servo
 		                    : -s_tracking_last_servo;
-		float base_speed = (abs_servo > SERVO_CURVE_THRESHOLD)
-		                   ? SPEED_ARC
-		                   : SPEED_STRAIGHT;
+		float target_speed = (abs_servo > SERVO_CURVE_THRESHOLD)
+		                     ? s_speed_arc
+		                     : s_speed_straight;
 
-		float diff = (float)s_tracking_last_servo * ARC_DIFF_GAIN;
-		float left_speed  = base_speed + diff;
-		float right_speed = base_speed - diff;
+		/* 速度斜坡：渐加速/渐减速 */
+		if (s_speed_ramp)
+		{
+			float dt = (float)(now_ms - s_last_ramp_ms) * 0.001f;
+			if (dt > 0.0f && dt < 0.5f)
+			{
+				if (target_speed > s_current_speed)
+				{
+					s_current_speed += TRACK_SPEED_RAMP_UP * dt;
+					if (s_current_speed > target_speed)
+						s_current_speed = target_speed;
+				}
+				else if (target_speed < s_current_speed)
+				{
+					s_current_speed -= TRACK_SPEED_RAMP_DOWN * dt;
+					if (s_current_speed < target_speed)
+						s_current_speed = target_speed;
+				}
+			}
+			else
+			{
+				s_current_speed = target_speed;  /* 首次或异常：直设目标 */
+			}
+			s_last_ramp_ms = now_ms;
+		}
+		else
+		{
+			s_current_speed = target_speed;  /* 无斜坡：直设目标 */
+		}
+
+		float diff = (float)s_tracking_last_servo * s_diff_gain;
+		float left_speed  = s_current_speed + diff;
+		float right_speed = s_current_speed - diff;
 		Motor_SetSpeedLR(left_speed, right_speed);
+
+		/* AB段：首次转弯 → 自动停车 */
+		if (s_stop_on_curve && abs_servo > SERVO_CURVE_THRESHOLD)
+		{
+			Tracking_Stop();
+			return;
+		}
 	}
 
 	/* ======== 循迹 PID + 舵机（每 10ms） ======== */

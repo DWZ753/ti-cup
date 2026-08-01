@@ -11,19 +11,35 @@
 
 #define TRACKING_CTRL_DT_MS    10    // 循迹 PID 计算周期
 
-/* ========== 固定速度（mm/s，开环基准） ========== */
+/* ========== 渐加速/渐减速 (mm/s²) ========== */
 
-#define SPEED_STRAIGHT          600.0f  // 直道速度
-#define SPEED_ARC               600.0f   // 弯道速度
+#define TRACK_SPEED_RAMP_UP     300.0f  // 加速斜率
+#define TRACK_SPEED_RAMP_DOWN   500.0f  // 减速斜率（刹车要快）
 
-// |舵机输出| 超过此值判定为弯道，切换到 SPEED_ARC
+/* ========== 速度 + 差速（各任务独立可调） ========== */
+
+// |舵机输出| 超过此值判定为弯道，切换到弯道速度
 #define SERVO_CURVE_THRESHOLD   25
 
-/* ========== 差速增益 ========== */
+/* 要求2：纯循迹 */
+#define TASK2_SPEED_STRAIGHT    800.0f
+#define TASK2_SPEED_ARC         800.0f
+#define TASK2_DIFF_GAIN         7.8f
 
-// 舵机角度 × 增益 = 两轮速度差 (mm/s)
-// 值越大差速转向越猛，值越小越柔和
-#define ARC_DIFF_GAIN           7.3f
+/* 要求4：AB段 循迹+平衡（首次转弯停止） */
+#define TASK4_SPEED_STRAIGHT    600.0f
+#define TASK4_SPEED_ARC         600.0f
+#define TASK4_DIFF_GAIN         7.3f
+
+/* 要求5：一圈+O点 循迹+平衡 */
+#define TASK5_SPEED_STRAIGHT    600.0f
+#define TASK5_SPEED_ARC         600.0f
+#define TASK5_DIFF_GAIN         7.3f
+
+/* 要求6：一圈+任意点 循迹+平衡 */
+#define TASK6_SPEED_STRAIGHT    600.0f
+#define TASK6_SPEED_ARC         600.0f
+#define TASK6_DIFF_GAIN         7.3f
 
 /* ========== 传感器权重（索引 0..7，左→右） ========== */
 
