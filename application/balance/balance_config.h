@@ -28,7 +28,7 @@
  */
 #define BALANCE_MAX_ANGLE_DEG     5.0f
 
-/* 暂时跳过回零，上电直接转 */
+/* 硬停回零使能（碰地有效，标零在 Set_Angle 中通过 HOME_OFFSET 处理） */
 #define BALANCE_SKIP_HOMING       0
 
 /* 硬停回零参数 */
@@ -46,7 +46,7 @@
  * 正值 = 上抬，负值 = 下压。
  * ⚠️ 必须实测标定。
  */
-#define BALANCE_HOME_OFFSET_DEG   -45.5f
+#define BALANCE_HOME_OFFSET_DEG   -45.5f   // 碰地后上抬到水平的角度，Pi 可在线微调(0x0E)
 
 /* ========== 球位置 PID 参数 ========== */
 
@@ -162,8 +162,33 @@
 /* 球到达目标判定阈值 (mm) */
 #define BALANCE_SEQ_THRESHOLD_MM   5.0f
 
+/* ========== 开环角度序列（要求3 Pi 离线降级方案） ========== */
+
+/*
+ * 当 Pi 离线超过 PI_TIMEOUT_MS 时，静态平衡序列自动切到开环模式。
+ * 每步：摆杆倾角 → 停留时间，推进下一帧。
+ * 角度基于 balance控制说明.md 中的物理计算，实际需实测微调。
+ */
+#define OPEN_LOOP_SEQ_LEN         6
+
+#define OPEN_LOOP_SEQ_ANGLE_0     5.0f    // +5° 右倾 → 球滚向右边
+#define OPEN_LOOP_SEQ_DWELL_0     600
+#define OPEN_LOOP_SEQ_ANGLE_1     -4.0f   // 减速/刹车
+#define OPEN_LOOP_SEQ_DWELL_1     250
+#define OPEN_LOOP_SEQ_ANGLE_2     0.0f    // 停在 +5cm 附近
+#define OPEN_LOOP_SEQ_DWELL_2     1500
+#define OPEN_LOOP_SEQ_ANGLE_3     -5.0f   // -5° 左倾 → 球滚回左边
+#define OPEN_LOOP_SEQ_DWELL_3     600
+#define OPEN_LOOP_SEQ_ANGLE_4     4.0f    // 减速/刹车
+#define OPEN_LOOP_SEQ_DWELL_4     250
+#define OPEN_LOOP_SEQ_ANGLE_5     0.0f    // 停在 -5cm 附近
+#define OPEN_LOOP_SEQ_DWELL_5     1500
+
 /* ========== 通信 ========== */
 
 #define PI_TIMEOUT_MS             200
+
+/** 丢球超时：超过此时长无有效帧 → 摆杆渐进回水平 */
+#define BALL_LOST_TIMEOUT_MS      500
 
 #endif /* __BALANCE_CONFIG_H__ */

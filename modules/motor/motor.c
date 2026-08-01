@@ -26,15 +26,25 @@
 
 static volatile int32_t g_encoder1_pulse;
 static volatile int32_t g_encoder2_pulse;
+/*
+ * 原始速度（float，仅在 ISR 中写入，仅原始 Getter 使用）
+ * 改为 int32_t 定点可消除 ISR 软浮点开销，但原始值未参与滤波链，
+ * 保持 float 以便调试时直接查看 RPM/mm/s 值。
+ */
 static volatile float   g_encoder1_rpm;
 static volatile float   g_encoder2_rpm;
 static volatile float   g_encoder1_speed;
 static volatile float   g_encoder2_speed;
 
-static volatile float   g_encoder1_rpm_f;    // 滤波后 RPM
-static volatile float   g_encoder2_rpm_f;
-static volatile float   g_encoder1_speed_f;  // 滤波后线速度 mm/s
-static volatile float   g_encoder2_speed_f;
+/*
+ * 滤波后速度/转速 — int32_t 定点（×1000），消除 ISR 中软浮点运算。
+ * mm/s → μm/s，RPM → mRPM。M0+ 上对齐 int32 读写是原子的，volatile
+ * 防止编译器缓存。Getter 内部转换回 float 以保持 API 兼容。
+ */
+static volatile int32_t g_encoder1_rpm_f;    // 滤波后 RPM × 1000
+static volatile int32_t g_encoder2_rpm_f;
+static volatile int32_t g_encoder1_speed_f;  // 滤波后线速度 μm/s
+static volatile int32_t g_encoder2_speed_f;
 
 /* ---------- 窗口累积器（TickHandler 内部使用） ---------- */
 
@@ -226,23 +236,45 @@ void Motor_TickHandler(void)
     g_encoder1_speed = raw_rpm1 * WHEEL_CIRCUMFERENCE_MM / 60.0f;
     g_encoder2_speed = raw_rpm2 * WHEEL_CIRCUMFERENCE_MM / 60.0f;
 
-    /* ---- EMA 滤波 ---- */
-    if (g_first_window)
+    /* ---- EMA 滤波（定点运算，消除 ISR 软浮点） ---- */
     {
-        // 首个窗口：直接赋值，跳过过渡过程
-        g_encoder1_rpm_f   = raw_rpm1;
-        g_encoder2_rpm_f   = raw_rpm2;
-        g_encoder1_speed_f = g_encoder1_speed;
-        g_encoder2_speed_f = g_encoder2_speed;
-        g_first_window     = false;
-    }
-    else
-    {
-        // new = old + (raw - old) * GAIN
-        g_encoder1_rpm_f   += (raw_rpm1 - g_encoder1_rpm_f)   * MOTOR_SPEED_EMA_GAIN;
-        g_encoder2_rpm_f   += (raw_rpm2 - g_encoder2_rpm_f)   * MOTOR_SPEED_EMA_GAIN;
-        g_encoder1_speed_f += (g_encoder1_speed - g_encoder1_speed_f) * MOTOR_SPEED_EMA_GAIN;
-        g_encoder2_speed_f += (g_encoder2_speed - g_encoder2_speed_f) * MOTOR_SPEED_EMA_GAIN;
+        /*
+         * GAIN_Q15 = 0.25 × 32768 = 8192
+         * new = old + ((raw - old) * GAIN_Q15) >> 15
+         */
+        #define GAIN_Q15  ((int32_t)(MOTOR_SPEED_EMA_GAIN * 32768.0f))
+
+        int32_t raw_rpm1_x1000  = (int32_t)(raw_rpm1 * 1000.0f);
+        int32_t raw_rpm2_x1000  = (int32_t)(raw_rpm2 * 1000.0f);
+        int32_t raw_spd1_x1000  = (int32_t)(g_encoder1_speed * 1000.0f);
+        int32_t raw_spd2_x1000  = (int32_t)(g_encoder2_speed * 1000.0f);
+
+        if (g_first_window)
+        {
+            g_encoder1_rpm_f   = raw_rpm1_x1000;
+            g_encoder2_rpm_f   = raw_rpm2_x1000;
+            g_encoder1_speed_f = raw_spd1_x1000;
+            g_encoder2_speed_f = raw_spd2_x1000;
+            g_first_window     = false;
+        }
+        else
+        {
+            int32_t d;
+
+            d = raw_rpm1_x1000 - g_encoder1_rpm_f;
+            g_encoder1_rpm_f += (d * GAIN_Q15) >> 15;
+
+            d = raw_rpm2_x1000 - g_encoder2_rpm_f;
+            g_encoder2_rpm_f += (d * GAIN_Q15) >> 15;
+
+            d = raw_spd1_x1000 - g_encoder1_speed_f;
+            g_encoder1_speed_f += (d * GAIN_Q15) >> 15;
+
+            d = raw_spd2_x1000 - g_encoder2_speed_f;
+            g_encoder2_speed_f += (d * GAIN_Q15) >> 15;
+        }
+
+        #undef GAIN_Q15
     }
 
     /* ---- 重置窗口 ---- */
@@ -260,10 +292,10 @@ void Motor_ResetEncoder(void)
     g_encoder1_speed = 0.0f;
     g_encoder2_speed = 0.0f;
 
-    g_encoder1_rpm_f   = 0.0f;
-    g_encoder2_rpm_f   = 0.0f;
-    g_encoder1_speed_f = 0.0f;
-    g_encoder2_speed_f = 0.0f;
+    g_encoder1_rpm_f   = 0;
+    g_encoder2_rpm_f   = 0;
+    g_encoder1_speed_f = 0;
+    g_encoder2_speed_f = 0;
 
     g_enc1_diff_sum  = 0;
     g_enc2_diff_sum  = 0;
@@ -273,24 +305,24 @@ void Motor_ResetEncoder(void)
     g_first_window   = true;
 }
 
-/* ========== 滤波值 Getter ========== */
+/* ========== 滤波值 Getter（定点→float 转换，API 兼容） ========== */
 
 float Motor_GetFilteredSpeed1(void)
 {
-    return g_encoder1_speed_f;
+	return (float)g_encoder1_speed_f * 0.001f;
 }
 
 float Motor_GetFilteredSpeed2(void)
 {
-    return g_encoder2_speed_f;
+	return (float)g_encoder2_speed_f * 0.001f;
 }
 
 float Motor_GetFilteredRPM1(void)
 {
-    return g_encoder1_rpm_f;
+	return (float)g_encoder1_rpm_f * 0.001f;
 }
 
 float Motor_GetFilteredRPM2(void)
 {
-    return g_encoder2_rpm_f;
+	return (float)g_encoder2_rpm_f * 0.001f;
 }

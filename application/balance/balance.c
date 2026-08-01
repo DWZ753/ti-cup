@@ -13,6 +13,7 @@
 #include "balance.h"
 #include "balance_config.h"
 #include "zdt_motor.h"
+#include "motor.h"
 #include "delay.h"
 #include "board.h"
 
@@ -23,15 +24,24 @@ static float    s_ball_pos;                     // 低通后球位置 (mm)
 static float    s_last_ball_pos;                // 上次球位置（差分用）
 static float    s_ball_vel;                     // 滤波后球速度 (mm/s)
 
+/*
+ * 宽窗差分速度估计：用 3 帧间隔的原始位置差分，压制 int16 量化噪声。
+ * 延迟 40ms（3 帧 @ 50Hz）+ EMA，替代原来的 125ms 级联低通。
+ */
+static float    s_vel_base_pos;                 // 宽窗差分基准位置 (mm)
+static uint8_t  s_vel_frame_count;              // 帧计数 (0..2)
+static float    s_vel_dt_sum;                   // 累积 dt (s)
+
 /* 控制输出 */
 static float    s_target_pos;                   // 目标位置 (mm)
-static float    s_angle_cmd;                    // 当前逻辑角度指令 (°)，0=水平
+static float    s_cmd_angle;                    // 最后发送的角度指令 (°)（查询用）
 static float    s_i_accum;                      // I 项积分器
 static float    s_ff_accel;                     // 待叠加 FF 倾角 (°)
 static uint8_t  s_confidence;                   // 最近一次置信度
 
 /* 时间戳 */
 static uint32_t s_last_update_ms;
+static uint32_t s_last_good_ms;                 // 最后收到有效 Pi 帧的时间
 
 /* ========== 静态平衡序列（要求 3） ========== */
 
@@ -51,6 +61,24 @@ static uint32_t s_seq_tick;
 static bool     s_seq_running;
 static bool     s_seq_done;
 static bool     s_seq_reached;
+static bool     s_seq_open_loop;  // true=开环模式，false=闭环（Pi 在线）
+
+/*
+ * 开环角度序列：Pi 离线时直接驱动摆杆角度完成 O→+5cm→-5cm 往返。
+ */
+static const struct {
+	float    angle_deg;
+	uint16_t dwell_ms;
+} s_open_loop_seq[] = {
+	{ OPEN_LOOP_SEQ_ANGLE_0, OPEN_LOOP_SEQ_DWELL_0 },
+	{ OPEN_LOOP_SEQ_ANGLE_1, OPEN_LOOP_SEQ_DWELL_1 },
+	{ OPEN_LOOP_SEQ_ANGLE_2, OPEN_LOOP_SEQ_DWELL_2 },
+	{ OPEN_LOOP_SEQ_ANGLE_3, OPEN_LOOP_SEQ_DWELL_3 },
+	{ OPEN_LOOP_SEQ_ANGLE_4, OPEN_LOOP_SEQ_DWELL_4 },
+	{ OPEN_LOOP_SEQ_ANGLE_5, OPEN_LOOP_SEQ_DWELL_5 },
+};
+
+#define S_OL_SEQ_LEN  (sizeof(s_open_loop_seq) / sizeof(s_open_loop_seq[0]))
 
 /* ========== 可调参数（运行时副本，Pi 可在线修改） ========== */
 
@@ -67,33 +95,37 @@ static float s_ff_gain     = FF_ACCEL_GAIN;
 static float s_ff_deadzone = FF_ACCEL_DEADZONE;
 static float s_ff_filter   = FF_ACCEL_FILTER;
 static float s_max_angle   = BALANCE_MAX_ANGLE_DEG;
+static float s_home_offset  = BALANCE_HOME_OFFSET_DEG;
 
 /* ========== 内部控制 ========== */
 
 /**
- * @brief 设置摆杆倾角 — 相对位移模式
+ * @brief 设置摆杆倾角 — 绝对位置模式
  * @param angle_deg 逻辑目标倾角 (°)，正=右倾，负=左倾，0=水平
- * @note  使用 QPos_Control（相对位移），与 init 上抬动作一致。
+ * @note  使用 QPos_Control（raF=1 绝对模式），原点在 Init 中已设为零点。
+ *        驱动器内部位置计数器是唯一真相源，无需软件跟踪位置。
  */
 static void Set_Angle(float angle_deg)
 {
-	float    last_motor_angle;
-	float    motor_angle;
-	float    delta_deg;
-	int32_t  delta_pulses;
+	int32_t absolute_pulses;
 
-	/* 逻辑角度 → 电机角度（叠加 HOME_OFFSET） */
-	motor_angle      = angle_deg       + BALANCE_HOME_OFFSET_DEG;
-	last_motor_angle = s_angle_cmd     + BALANCE_HOME_OFFSET_DEG;
-	delta_deg        = motor_angle - last_motor_angle;
-	delta_pulses     = (int32_t)(delta_deg * BALANCE_PULSE_PER_DEG);
+	/* 钳位到安全范围 */
+	if (angle_deg > s_max_angle)
+		angle_deg = s_max_angle;
+	else if (angle_deg < -s_max_angle)
+		angle_deg = -s_max_angle;
 
-	if (delta_pulses == 0)
-		return;
+	/*
+	 * raF=1 绝对模式：原点在地面（homing 后 Reset_CurPos_To_Zero 处）。
+	 * 水平位 = s_home_offset 度。绝对脉冲 = (angle + home_offset) × PULSE_PER_DEG。
+	 * 不再在水平位重新标零——那一步不可靠。
+	 */
+	absolute_pulses = (int32_t)((angle_deg + s_home_offset)
+	                            * BALANCE_PULSE_PER_DEG);
 
-	s_angle_cmd = angle_deg;
+	s_cmd_angle = angle_deg;
 
-	ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, delta_pulses);
+	ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, absolute_pulses);
 }
 
 /* ========== 初始化 ========== */
@@ -150,52 +182,52 @@ void Balance_Init(void)
 #endif
 
 	/*
-	 * 2. 预设 QPos 参数（raF=0 相对模式）
+	 * 2. 预设 QPos 参数（raF=1 绝对模式）
 	 */
 	ZDT_Motor_Set_QPos_Params(BALANCE_MOTOR_ID,
 	                          BALANCE_WORK_VEL,
 	                          BALANCE_WORK_ACC,
-	                          0,     /* raF = 相对上次目标 */
+	                          1,     /* raF = 绝对位置 */
 	                          false);
 
 	/*
 	 * 3. 回零后上抬到水平位置
+	 * 使用 Pos_Control（raF=2，相对当前位置），不依赖 QPos 预设。
 	 */
-	if (BALANCE_HOME_OFFSET_DEG != 0.0f)
+	if (s_home_offset != 0.0f)
 	{
-		int32_t pulses;
-
-		pulses = (int32_t)(BALANCE_HOME_OFFSET_DEG
-		                   * BALANCE_PULSE_PER_DEG);
+		int32_t pulses = (int32_t)(s_home_offset * BALANCE_PULSE_PER_DEG);
 		if (pulses != 0)
 		{
+			uint8_t  dir = (pulses >= 0) ? 0 : 1;
+			uint32_t clk = (uint32_t)((pulses >= 0) ? pulses : -pulses);
 			delay_ms(100);
-			ZDT_Motor_QPos_Control(BALANCE_MOTOR_ID, pulses);
+			ZDT_Motor_Pos_Control(BALANCE_MOTOR_ID, dir,
+			                      BALANCE_WORK_VEL, BALANCE_WORK_ACC,
+			                      clk, 2,     /* raF=2: 相对当前实际位置 */
+			                      false);
 			delay_ms(1000);
 		}
 
-		/* 设为软件原点：此后 s_angle_cmd=0 表示水平 */
-		ZDT_Motor_Reset_CurPos_To_Zero(BALANCE_MOTOR_ID);
-
-		/* 重新预设 QPos 参数（Reset 后需重设） */
-		ZDT_Motor_Set_QPos_Params(BALANCE_MOTOR_ID,
-		                          BALANCE_WORK_VEL,
-		                          BALANCE_WORK_ACC,
-		                          0,
-		                          false);
 	}
 
 	/*
 	 * 4. 初始化内部状态
 	 */
-	s_angle_cmd      = 0.0f;
+	s_cmd_angle      = 0.0f;
 	s_target_pos     = 0.0f;
 	s_ball_pos       = 0.0f;
 	s_ball_vel       = 0.0f;
 	s_ff_accel       = 0.0f;
 	s_confidence     = 0;
 	s_last_update_ms = 0;
+	s_last_good_ms    = 0;
+	s_vel_base_pos    = 0.0f;
+	s_vel_frame_count = 0;
+	s_vel_dt_sum      = 0.0f;
 	s_i_accum        = 0.0f;
+	/* 激活闭环就绪：目标 O 点，等待 Pi 帧接管 */
+	Balance_Enable();
 }
 
 /* ========== 目标设定 ========== */
@@ -246,6 +278,7 @@ void Balance_SetParam(Balance_ParamID id, float value)
 	case BALANCE_PARAM_FF_DEADZONE: s_ff_deadzone = value; break;
 	case BALANCE_PARAM_FF_FILTER:   s_ff_filter   = value; break;
 	case BALANCE_PARAM_MAX_ANGLE:   s_max_angle   = value; break;
+	case BALANCE_PARAM_HOME_OFFSET: s_home_offset = value;  break;
 	case BALANCE_PARAM_RESET:       s_i_accum     = 0.0f;  break;
 	}
 }
@@ -267,6 +300,7 @@ float Balance_GetParam(Balance_ParamID id)
 	case BALANCE_PARAM_FF_DEADZONE: return s_ff_deadzone;
 	case BALANCE_PARAM_FF_FILTER:   return s_ff_filter;
 	case BALANCE_PARAM_MAX_ANGLE:   return s_max_angle;
+	case BALANCE_PARAM_HOME_OFFSET: return s_home_offset;
 	default:                        return 0.0f;
 	}
 }
@@ -284,28 +318,69 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	float    dt_s;
 
 	s_confidence = confidence;
-
-	/* 丢球 → 冻结角度，不更新 PID */
-	if (confidence == 0)
-		return;
-
 	now_ms = Board_GetTickMs();
 
+	/* ---- 0. 丢球超时检测 ---- */
+	if (confidence == 0)
+	{
+		/*
+		 * 连续丢球超过 BALL_LOST_TIMEOUT_MS → 渐进回水平。
+		 * 渐进速率 = MAX_ANGLE / 1000ms × dt，避免突变。
+		 */
+		if (s_last_good_ms > 0
+		    && now_ms - s_last_good_ms > BALL_LOST_TIMEOUT_MS)
+		{
+			float dt = (float)(now_ms - s_last_update_ms) * 0.001f;
+			if (dt > 0.001f && dt < 0.5f)
+			{
+				float step = s_max_angle * 0.001f * dt * 1000.0f;
+				if (s_cmd_angle > step)
+					Set_Angle(s_cmd_angle - step);
+				else if (s_cmd_angle < -step)
+					Set_Angle(s_cmd_angle + step);
+				else
+					Set_Angle(0.0f);
+			}
+			s_i_accum = 0.0f;
+		}
+		/* 未超时 → 冻结摆杆（保持上次角度） */
+		return;
+	}
+
+	s_last_good_ms = now_ms;
+
 	/* ---- 1. 位置低通滤波 ---- */
-	s_ball_pos_raw = ball_pos_mm;  // 原始值（序列阈值用）
+	s_ball_pos_raw = ball_pos_mm;
 	s_ball_pos = s_ball_pos * (1.0f - s_pos_alpha)
 	           + ball_pos_mm    * s_pos_alpha;
 
-	/* ---- 2. 球速低通滤波（位置差分） ---- */
-	if (s_last_update_ms > 0)
+	/* ---- 2. 宽窗差分速度估计 ---- */
+	/*
+	 * 对原始位置做 3 帧间隔差分，压制 int16 ±1mm 量化噪声（~3×），
+	 * 再用单级 EMA 平滑。延迟 ~40ms（vs 旧方案 ~125ms）。
+	 */
 	{
-		float raw_vel;
-		float dt_s = (float)(now_ms - s_last_update_ms) * 0.001f;
-		if (dt_s > 0.001f && dt_s < 0.5f)
+		float frame_dt = 0.0f;
+		if (s_last_update_ms > 0)
 		{
-			raw_vel = (s_ball_pos - s_last_ball_pos) / dt_s;
-			s_ball_vel = s_ball_vel * (1.0f - s_vel_alpha)
-			           + raw_vel    * s_vel_alpha;
+			frame_dt = (float)(now_ms - s_last_update_ms) * 0.001f;
+			if (frame_dt > 0.001f && frame_dt < 0.5f)
+			{
+				s_vel_dt_sum += frame_dt;
+				s_vel_frame_count++;
+
+				if (s_vel_frame_count >= 3)
+				{
+					float raw_vel;
+					raw_vel = (s_ball_pos_raw - s_vel_base_pos) / s_vel_dt_sum;
+					s_ball_vel = s_ball_vel * (1.0f - s_vel_alpha)
+					           + raw_vel    * s_vel_alpha;
+
+					s_vel_base_pos   = s_ball_pos_raw;
+					s_vel_frame_count = 0;
+					s_vel_dt_sum      = 0.0f;
+				}
+			}
 		}
 	}
 	s_last_ball_pos = s_ball_pos;
@@ -339,7 +414,6 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	/* 4b. D 项（速度阻尼）+ 死区衰减 */
 	angle_d = s_kd * s_ball_vel;
 
-	/* 死区：|error| < DEADBAND 时 D 按比例衰减 */
 	if (abs_err < s_deadband)
 		angle_d *= (abs_err / s_deadband);
 
@@ -393,7 +467,7 @@ void Balance_ChassisFF(float accel_m_s2)
 
 float Balance_GetAngle(void)
 {
-	return s_angle_cmd;
+	return s_cmd_angle;
 }
 
 void Balance_SetAngle(float angle_deg)
@@ -405,11 +479,12 @@ void Balance_SetAngle(float angle_deg)
 
 void Balance_Start(void)
 {
-	s_seq_step    = 0;
-	s_seq_tick    = Board_GetTickMs();
-	s_seq_running = true;
-	s_seq_done    = false;
-	s_seq_reached = false;
+	s_seq_step      = 0;
+	s_seq_tick      = Board_GetTickMs();
+	s_seq_running   = true;
+	s_seq_done      = false;
+	s_seq_reached   = false;
+	s_seq_open_loop = false;  // 默认闭环，检测到 Pi 离线后切换
 
 	if (S_SEQ_LEN > 0)
 	{
@@ -428,6 +503,46 @@ void Balance_SeqUpdate(void)
 		return;
 
 	now_ms = Board_GetTickMs();
+
+	/*
+	 * Pi 连通性检测：超过 PI_TIMEOUT_MS 无有效帧 → 切到开环模式。
+	 * 开环模式直接驱动摆杆角度序列，不依赖摄像头反馈。
+	 */
+	if (!s_seq_open_loop
+	    && now_ms - s_last_good_ms > PI_TIMEOUT_MS
+	    && s_last_good_ms > 0)
+	{
+		s_seq_open_loop = true;
+		s_seq_step      = 0;
+		s_seq_tick      = now_ms;
+		s_seq_reached   = false;
+
+		/* 立即应用第一步的开环角度 */
+		Set_Angle(s_open_loop_seq[0].angle_deg);
+	}
+
+	/* ---- 开环模式：角度序列驱动 ---- */
+	if (s_seq_open_loop)
+	{
+		if (now_ms - s_seq_tick >= s_open_loop_seq[s_seq_step].dwell_ms)
+		{
+			s_seq_step++;
+			s_seq_tick = now_ms;
+
+			if (s_seq_step >= S_OL_SEQ_LEN)
+			{
+				Set_Angle(0.0f);
+				s_seq_running = false;
+				s_seq_done    = true;
+				return;
+			}
+
+			Set_Angle(s_open_loop_seq[s_seq_step].angle_deg);
+		}
+		return;
+	}
+
+	/* ---- 闭环模式：Pi 反馈驱动 ---- */
 	target = s_seq_table[s_seq_step].target_mm;
 
 	/* 球到达目标？用原始位置避免滤波滞后 */
@@ -468,6 +583,114 @@ bool Balance_IsDone(void)
 	return s_seq_done;
 }
 
+/* ========== 底盘加速度前馈 ========== */
+
+/*
+ * FF 内部状态：从编码器速度差分估计底盘加速度，
+ * 低通滤波后馈入 Balance_ChassisFF()。
+ */
+static float    s_ff_last_speed;   /**< 上次左右轮平均速度 (mm/s) */
+static uint32_t s_ff_last_ms;      /**< 上次 FF 计算时间戳 */
+static float    s_ff_accel_f;      /**< 滤波后加速度 (m/s²)，调试用 */
+
+/**
+ * @brief 底盘加速度前馈更新 — 编码器速度差分 → 低通 → Balance_ChassisFF
+ * @param pi_active true=Pi 在线（叠加到 PD 输出），false=Pi 离线（仅更新内部状态）
+ */
+void Balance_ChassisFF_Update(bool pi_active)
+{
+	uint32_t now = Board_GetTickMs();
+
+	/* 与编码器更新频率对齐（~20ms） */
+	if (now - s_ff_last_ms < 20)
+		return;
+
+	float speed_now = (Motor_GetFilteredSpeed1() + Motor_GetFilteredSpeed2()) * 0.5f;
+	float accel_raw = 0.0f;
+
+	if (s_ff_last_ms > 0)
+	{
+		float dt_s = (float)(now - s_ff_last_ms) * 0.001f;
+		if (dt_s > 0.001f)
+		{
+			/* mm/s → m/s² */
+			accel_raw = (speed_now - s_ff_last_speed) / dt_s * 0.001f;
+		}
+	}
+
+	s_ff_last_speed = speed_now;
+	s_ff_last_ms    = now;
+
+	/*
+	 * 非对称低通：匀速/减速阶段更快衰减，加速阶段正常滤波。
+	 * decay = 1 - k·α，其中 k=1（同号/加速）或 k=1.5（异号/回零）。
+	 * 最坏情况 α=0.5 → decay=0.25，永不为负。
+	 */
+	{
+		float decay = (accel_raw * s_ff_accel_f >= 0.0f)
+		              ? (1.0f - s_ff_filter)
+		              : (1.0f - s_ff_filter * 1.5f);
+		if (decay < 0.0f) decay = 0.0f;
+
+		s_ff_accel_f = s_ff_accel_f * decay + accel_raw * s_ff_filter;
+	}
+
+	if (pi_active)
+	{
+		/* Pi 在线 → 叠加到 PD 控制律 */
+		Balance_ChassisFF(s_ff_accel_f);
+	}
+	else
+	{
+		/*
+		 * Pi 离线 → 不输出 FF（摆杆保持原位），
+		 * 但仍更新内部状态以确保 Pi 重连时估计值平滑。
+		 */
+	}
+
+	/* 速度接近 0 时强制衰减到 0，避免静止噪声累积 */
+	if (speed_now > -20.0f && speed_now < 20.0f
+	    && accel_raw > -0.5f && accel_raw < 0.5f)
+	{
+		s_ff_accel_f = 0.0f;
+	}
+}
+
+float Balance_GetFFAccel(void)
+{
+	return s_ff_accel_f;
+}
+
+void Balance_ResetFF(void)
+{
+	s_ff_last_speed = 0.0f;
+	s_ff_last_ms    = 0;
+	s_ff_accel_f    = 0.0f;
+}
+
+void Balance_Rezero(void)
+{
+	/*
+	 * raF=1 绝对模式下驱动器的位置计数器始终可信。
+	 * 直接发 Set_Angle(0) 让摆杆回到水平位即可，无需 Reset_CurPos_To_Zero。
+	 * 如果摆杆本就在水平位 → QPos_Control(addr, home_offset_pulses) 是空操作。
+	 */
+	Set_Angle(0.0f);
+	Balance_Enable();
+}
+
+void Balance_Enable(void)
+{
+	/*
+	 * 设置目标为 0（O 点），清零积分和前馈。
+	 * Pi 发来 CMD_BALL_POS 时 Balance_Update() 自动接管。
+	 * 摆杆由 ZDT 绝对位置闭环保持在 0，无需额外动作。
+	 */
+	s_target_pos = 0.0f;
+	s_i_accum    = 0.0f;
+	s_ff_accel   = 0.0f;
+}
+
 /* ========== 停止 ========== */
 
 /**
@@ -476,7 +699,7 @@ bool Balance_IsDone(void)
 void Balance_Stop(void)
 {
 	ZDT_Motor_Stop_Now(BALANCE_MOTOR_ID, false);
-	s_angle_cmd    = 0.0f;
+	s_cmd_angle    = 0.0f;
 	s_i_accum      = 0.0f;
 	s_ff_accel     = 0.0f;
 }

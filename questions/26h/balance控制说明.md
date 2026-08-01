@@ -141,28 +141,31 @@ uart.send(CMD_BALL_POS, struct.pack('>hB', pos_mm, confidence))
 
 ## 四、两种工作模式
 
-### 模式 A：静态平衡（要求 3）— 开环时序
+### 模式 A：静态平衡（要求 3）— 双模式（闭环优先 + 开环降级）
 
 车静止。`Balance_Start()` 启动 → 主循环调 `Balance_SeqUpdate()` 推进。
 
-开环时序表（[balance_config.h:51-64](../application/balance/balance_config.h#L51-L64)）：
+**优先使用闭环模式**（Pi 在线）：通过 `Balance_Update()` 接收 Pi 的球位置反馈，
+PD 实时控制摆杆倾角使球移动到目标 mm 位置再停留。
+
+**自动降级到开环模式**（Pi 离线）：如果超过 `PI_TIMEOUT_MS`(200ms) 无 Pi 帧，
+自动切换到开环角度序列表（`balance_config.h` 中的 `OPEN_LOOP_SEQ_*` 宏）：
 
 | 步骤 | 倾角 | 时长 | 效果 |
 |------|------|------|------|
-| 0 | +5° | 500ms | 球加速滚向 +5cm |
-| 1 | -4° | 200ms | 反向倾角减速刹车 |
-| 2 | 0° | 2000ms | 停在 +5cm 处 |
-| 3 | -5° | 500ms | 球加速滚向 -5cm |
-| 4 | +4° | 200ms | 减速刹车 |
-| 5 | 0° | 2000ms | 停在 -5cm 处 |
-| 6 | — | — | 序列结束 |
+| 0 | +5° | 600ms | 球加速滚向 +5cm |
+| 1 | -4° | 250ms | 反向倾角减速刹车 |
+| 2 | 0° | 1500ms | 停在 +5cm 处 |
+| 3 | -5° | 600ms | 球加速滚向 -5cm |
+| 4 | +4° | 250ms | 减速刹车 |
+| 5 | 0° | 1500ms | 停在 -5cm 处 |
 
 各步骤角度和时间可在 `balance_config.h` 中独立调整。
 
 ### 模式 B：PD 闭环（要求 4/5/6）— 需要 Pi 送球位置
 
-Pi 每 20ms 发 `CMD_BALL_POS` → MCU 调 `Balance_Update()` → PD 实时计算倾角。
-不再需要开环时序表，球位置由摄像头实时反馈。
+Pi 每 ~50Hz 发 `CMD_BALL_POS` → MCU 调 `Balance_Update()` → PD 实时计算倾角。
+球速度由 MCU 端宽窗差分估计（3 帧间隔，~40ms 延迟），不依赖 Pi 提供速度数据。
 
 **confidence 处理策略**：
 | 值 | 含义 | MCU 行为 |
@@ -180,13 +183,13 @@ Pi 每 20ms 发 `CMD_BALL_POS` → MCU 调 `Balance_Update()` → PD 实时计�
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `BALANCE_MOTOR_ID` | 1 | ZDT 电机地址 |
-| `BALANCE_WORK_VEL` | 200 | 工作转速 (RPM) |
+| `BALANCE_WORK_VEL         70 | 工作转速 (RPM) |
 | `BALANCE_MAX_ANGLE_DEG` | 10.0 | 摆杆最大倾角 (°)，安全限幅 |
 | `BALANCE_SKIP_HOMING` | 0 | 0=硬停回零，1=跳过(合页未到时用) |
 | `BALANCE_ZERO_DIR` | 0 | 回零方向：0=CW下转碰地，1=CCW（首次上电实测） |
-| `BALANCE_HOME_OFFSET_DEG` | 25.0 | 回零后上抬到水平的偏移角度(°)，⚠️ 必须实测标定 |
+| `BALANCE_HOME_OFFSET_DEG  -45.5 | 回零后上抬到水平的偏移角度(°)，⚠️ 必须实测标定 |
 | `BALANCE_ZERO_VEL` | 30 | 回零速度 (RPM) |
-| `BALANCE_ZERO_CUR_MA` | 500 | 回零碰撞检测电流 (mA) |
+| `BALANCE_ZERO_CUR_MA        800 | 回零碰撞检测电流 (mA) |
 | `BALANCE_ZERO_TIME_MS` | 50 | 回零碰撞检测时间 (ms) |
 
 ### PD 参数
@@ -215,7 +218,7 @@ Pi 每 20ms 发 `CMD_BALL_POS` → MCU 调 `Balance_Update()` → PD 实时计�
 
 ### 第 0 步：确认机械参数（合页到后首次上电）
 
-1. 确认 `BALANCE_SKIP_HOMING = 0`、`BALANCE_HOME_OFFSET_DEG = 25.0`
+1. 确认 `BALANCE_SKIP_HOMING = 0`、`BALANCE_HOME_OFFSET_DEG  -45.5`
 2. 上电 → 电机下转碰地 → 电流尖峰 → 自动停止 → 上抬 25°
 3. 如果电机**上转**而不是下转 → 改 `BALANCE_ZERO_DIR`（0→1 或 1→0）
 4. 上抬后摆杆不够水平 → 加大 `BALANCE_HOME_OFFSET_DEG`；太高 → 减小。反复几次直到肉眼水平

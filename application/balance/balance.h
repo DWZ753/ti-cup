@@ -36,6 +36,7 @@ typedef enum {
 	BALANCE_PARAM_FF_FILTER,    /**< FF 低通系数 */
 	BALANCE_PARAM_MAX_ANGLE,    /**< °, 输出总限幅 */
 	BALANCE_PARAM_RESET,        /**< 清零积分（value 忽略） */
+	BALANCE_PARAM_HOME_OFFSET,  /**< °, 回零后上抬角度（正=上抬） */
 } Balance_ParamID;
 
 void Balance_SetParam(Balance_ParamID id, float value);
@@ -94,6 +95,37 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence);
  * @note  每循迹周期调用一次（~10ms），内部叠加到下次 PD 输出
  */
 void Balance_ChassisFF(float accel_m_s2);
+
+/**
+ * @brief 底盘加速度前馈更新（每循迹周期调用）
+ * @param pi_active true=Pi 在线（FF 叠加到 PD），false=Pi 离线（仅计算不输出）
+ * @note  内部从编码器速度差分估计加速度，低通后馈入 Balance_ChassisFF()
+ */
+void Balance_ChassisFF_Update(bool pi_active);
+
+/**
+ * @brief 查询当前底盘加速度前馈估计值
+ * @return 滤波后加速度 (m/s²)
+ */
+float Balance_GetFFAccel(void);
+
+/**
+ * @brief 重置底盘前馈内部状态（任务启动时调用）
+ */
+void Balance_ResetFF(void);
+
+/**
+ * @brief 软归零：将当前位置设为原点，不移动电机
+ * @note  调用 ZDT_Motor_Reset_CurPos_To_Zero() + 重设 QPos 参数。
+ *        用于状态切换时替代 Balance_SetAngle(0)，避免不必要的物理移动。
+ */
+void Balance_Rezero(void);
+
+/**
+ * @brief 激活闭环就绪：目标=0，等待 Pi 球位置帧即自动开始 PD 控制
+ * @note  在 Balance_Init() 内部自动调用，也可在 Balance_Stop() 后手动调用。
+ */
+void Balance_Enable(void);
 
 /**
  * @brief 查询当前摆杆角度指令

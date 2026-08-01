@@ -117,6 +117,12 @@ void Protocol_Init(Protocol_RxCallback rx_cb, UART_Handle *uart)
 	s_uart   = uart;
 	s_rx_pos = 0;
 
+	/*
+	 * 清空 UART 硬件接收缓冲区，丢弃 MCU 启动/回零期间
+	 * Pi 可能已发送的帧（如 PID 参数同步帧）。
+	 * 不清理会导致协议解析器收到半帧或过期帧而卡死。
+	 */
+	UART_FlushRawRx(uart);
 	UART_StartReceiveRaw(uart);
 }
 

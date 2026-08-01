@@ -10,7 +10,6 @@
 MSPM0 小车端已有功能：
 - ✅ 灰度循迹 + 舵机转向（[main.c](../../main.c) + [chassis_config.h](../../application/chassis/chassis_config.h)）
 - ✅ 直流电机差速驱动
-- ✅ ZDT 闭环步进电机云台模块（[application/gimbal/](../../application/gimbal/gimbal.h)）
 - ✅ PID 控制器（[lib/application/pid/](../../../lib/mspm0/application/pid/pid.h)）
 - ✅ UART COBS 通信协议（[lib/modules/protocol/](../../../lib/mspm0/modules/protocol/)）
 
@@ -21,7 +20,6 @@ MSPM0 小车端已有功能：
 | 🔴 P0 | **球位置 PID 控制器**（外环） | `application/balance/balance.c/h` | 2h |
 | 🔴 P0 | **Pi→MSPM0 通信接收**（解析 CMD_BALL_POS） | 改 `main.c` + `board.c` | 1h |
 | 🟡 P1 | **底盘加速度前馈**（编码器→速度差分→补偿倾角） | `application/balance/balance.c` | 1h |
-| 🟡 P1 | **ZDT 回零方向实机测试** | 改 `application/gimbal/gimbal.c` | 30min |
 | 🟢 P2 | **PID 调参**（上赛道后） | `application/balance/balance_config.h` | 持续调 |
 | 🟢 P2 | **UART 遥测输出**（调试用） | `main.c` | 30min |
 
@@ -95,7 +93,6 @@ $$ \theta_{comp} = \arctan\left(\frac{a_{disturbance}}{g}\right) \approx \frac{a
                          └───────┬──────┘
                                  │ θ_ff
                                  ▼
-ball_pos_mm ──→ [低通] ──→ [PD] ──→ ⊕ ──→ θ_cmd ──→ gimbal.SetAngle()
   (Pi@50Hz)        │         ▲                │
                    │         │                ▼
                    └──→ [速度估计]         ZDT电机 → 摆杆物理
@@ -127,7 +124,7 @@ angle_cmd += chassis_feedforward();
 
 // 6. 钳位 + 发送
 angle_cmd = CLAMP(angle_cmd, -MAX_ANGLE_DEG, MAX_ANGLE_DEG);
-Gimbal_SetAngle(angle_cmd);
+Balance_SetAngle(angle_cmd);
 ```
 
 ### 3.3 参数物理意义
@@ -183,18 +180,14 @@ float chassis_feedforward(void)
 
 ## 四、现有代码基础
 
-### 4.1 gimbal 模块（直接调用，不需要改）
 
-位置：[application/gimbal/gimbal.h](../../application/gimbal/gimbal.h)
 
 ```c
-Gimbal_Init();           // 上电自动归零（阻塞 ~3s）
-Gimbal_SetAngle(5.0f);   // 摆杆上抬 5°
-Gimbal_IsIdle();         // 查询是否到位（当前未完整实现，见 gimbal.md 待办）
-Gimbal_Stop();           // 紧急停止
+Balance_Init();           // 上电自动归零（阻塞 ~3s）
+Balance_SetAngle(5.0f);   // 摆杆上抬 5°
+Balance_Stop();           // 紧急停止
 ```
 
-**需要先做的实机测试**：确认回零方向（`o_dir`），见 [gimbal.md](../../application/gimbal/gimbal.md) 待实测表。上电跑一遍 `Gimbal_Init()`，看电机是向下转（碰地）还是向上转。向上转就把 `o_dir` 从 0 改成 1。
 
 ### 4.2 PID 模块
 
@@ -245,7 +238,7 @@ application/balance/
 **balance.h 最小 API**：
 
 ```c
-void Balance_Init(void);                    // 初始化（内部调 Gimbal_Init）
+void Balance_Init(void);                    // 初始化（内部调 Balance_Init）
 void Balance_SetTarget(float pos_mm);       // 设置球目标位置（0=O点）
 void Balance_Update(float ball_pos_mm,      // Pi 更新（50Hz 调用）
                     float ball_vel_mm_s,
@@ -339,7 +332,7 @@ typedef enum {
 
 1. **没有 FPU**：浮点运算走软件模拟，50Hz 下没问题，但不要放在 ISR 里
 2. **ZDT 指令间隔**：连续发两条 ZDT 命令之间至少 `delay_ms(10)`，防止粘包
-3. **Gimbal_Init 是阻塞的**（~3 秒），在 `Board_Init()` 中调用，不要在运行时调用
+3. **Balance_Init 是阻塞的**（~3 秒），在 `Board_Init()` 中调用，不要在运行时调用
 4. **UART 接收缓冲**：`protocol` 模块的帧解析在后台完成，`main()` 循环中只需处理回调
 5. **IMU 可选**：如果你需要摆杆真实角度做反馈（而非只信任 ZDT 编码器），可以用 BMI088 的 pitch 角做冗余校验。但优先用 ZDT 编码器（精度更高、无漂移）
 
@@ -362,7 +355,7 @@ Pi 发来的 confidence 处理策略：
 ## 八、测试验证清单
 
 - [ ] ZDT 回零方向正确（电机下转碰地）
-- [ ] `Gimbal_SetAngle()` 正负方向正确（正=上抬，负=下压）
+- [ ] `Balance_SetAngle()` 正负方向正确（正=上抬，负=下压）
 - [ ] Pi 通信正常（能收到 0x25 帧，position 值合理）
 - [ ] 静态平衡：球从 +50mm 回到 0mm，稳定在 ±1cm 内，时间 ≤5s
 - [ ] 底盘加速度估计：编码器速度差分值符号正确（加速=正，减速=负）
