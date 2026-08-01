@@ -29,6 +29,10 @@
 #define CMD_MOTOR       0x30  /**< 电机差速: speed(int8), diff(int8) [-100,100] */
 #define CMD_BEAM        0x31  /**< 摆杆倾角: angle(int8) [-10,10] 度 */
 #define CMD_BALL_POS     0x25  /**< Pi → MCU 球位置: pos_mm(int16,BE) + confidence(uint8) */
+#define CMD_SET_PID      0x26  /**< Pi → MCU 设置PID: param_id(1B) + value(f32 LE,4B) */
+#define CMD_PID_ACK      0x27  /**< MCU → Pi PID确认: 同上 */
+#define CMD_TASK_START   0x33  /**< MCU → Pi 任务开始: task_id(uint8) */
+#define CMD_TASK_STOP    0x34  /**< MCU → Pi 任务结束: time_ms(uint16,BE) */
 #define CMD_STOP         0x32  /**< 立即停止: 无载荷 */
 #define CMD_RESUME_LINE  0x2F  /**< 回到循迹: 无载荷 */
 
@@ -423,6 +427,7 @@ static void ChassisFF_Update(void)
 
 	float speed_now = (Motor_GetFilteredSpeed1() + Motor_GetFilteredSpeed2()) * 0.5f;
 	float accel_raw = 0.0f;
+	float ff_angle;
 
 	if (s_last_ff_ms > 0)
 	{
@@ -504,18 +509,20 @@ int main(void)
 				s_oled_dirty    = true;
 			}
 
-			/* KEY4：确认选择 */
+			/* KEY4：确认选择 → 进入就绪，摆杆归零 */
 			if (Key_GetFlag(3))
 			{
+				Balance_SetAngle(0.0f);
 				s_state      = STATE_READY;
 				s_oled_dirty = true;
 			}
 			break;
 
 		case STATE_READY:
-			/* KEY3：返回菜单重新选择 */
+			/* KEY3：返回菜单，摆杆归零 */
 			if (Key_GetFlag(2))
 			{
+				Balance_SetAngle(0.0f);
 				s_state      = STATE_MENU;
 				s_oled_dirty = true;
 			}
@@ -574,12 +581,22 @@ int main(void)
 				s_last_ff_ms         = 0;
 			}
 
+				/* 静态平衡任务：启动序列 */
+			if (s_selected_task == TASK_BAL_STATIC)
+				Balance_Start();
+
+			/* 通知 Pi 任务开始 */
+			{
+				uint8_t tid = (uint8_t)s_selected_task;
+				Protocol_SendFrame(CMD_TASK_START, &tid, 1);
+			}
+
 				/* 通知 Pi 任务开始 */
 				{
 					uint8_t task_id = (uint8_t)s_selected_task;
 					Protocol_SendFrame(CMD_TASK_START, &task_id, 1);
 				}
-				s_state      = STATE_RUNNING;
+			s_state      = STATE_RUNNING;
 				s_oled_dirty = true;
 			}
 			break;
@@ -605,8 +622,9 @@ int main(void)
 						Tracking_Stop();
 				}
 
-				/* 自动停止检测 */
-				else if (s_selected_task != TASK_REMOTE)
+				/* 自动停止检测（循迹任务用，平衡任务不适用） */
+				else if (s_selected_task != TASK_REMOTE
+				         && s_selected_task != TASK_BAL_STATIC)
 				{
 					if (!Tracking_IsRunning())
 						stopped = true;
@@ -622,10 +640,11 @@ int main(void)
 						Balance_SetAngle(0.0f);
 					}
 
-					/* 通知 Pi 任务完成 + 耗时(ms, 大端) */
+					/* 通知 Pi 任务结束 + 耗时(ms, 大端) */
 					{
 						uint8_t msg[] = { (uint8_t)(s_last_time_ms >> 8),
 						                  (uint8_t)(s_last_time_ms & 0xFF) };
+						Protocol_SendFrame(CMD_TASK_STOP, msg, 2);
 						Protocol_SendFrame(CMD_TASK_STOP, msg, 2);
 					}
 
@@ -663,6 +682,7 @@ int main(void)
 			break;
 
 		case TASK_BAL_STATIC:
+				Balance_SeqUpdate();
 				break;
 
 			case TASK_REMOTE:
