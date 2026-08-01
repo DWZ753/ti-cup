@@ -13,13 +13,23 @@
 
 /* ========== 渐加速/渐减速 (mm/s²) ========== */
 
-#define TRACK_SPEED_RAMP_UP     300.0f  // 加速斜率
-#define TRACK_SPEED_RAMP_DOWN   500.0f  // 减速斜率（刹车要快）
+#define TRACK_SPEED_RAMP_UP     100.0f  // 加速斜率
+#define TRACK_SPEED_RAMP_DOWN   300.0f  // 减速斜率（刹车要快）
 
 /* ========== 速度 + 差速（各任务独立可调） ========== */
 
 // |舵机输出| 超过此值判定为弯道，切换到弯道速度
 #define SERVO_CURVE_THRESHOLD   25
+
+/* ========== 弯道判定（任务4 B点 / 任务2·5·6 一圈 停车共用） ========== */
+
+// 弯道信号需持续时长 (ms)：防止启动瞬间纠偏/直道抖动一压阈值就误判进弯
+#define CURVE_PERSIST_MS       300
+// 启动后防误停时间 (ms)：此时间内不判定弯道（跳过启动瞬态）
+#define CURVE_ARM_MS           800
+// 弯道退出需持续时长 (ms)：过弯回正时舵机摆动不误判出弯。
+// 注意：此值影响一圈任务在 A 点的停车滞后（退出防抖时间），越小停得越早。
+#define CURVE_EXIT_MS          150
 
 /* 要求2：纯循迹 */
 #define TASK2_SPEED_STRAIGHT    800.0f

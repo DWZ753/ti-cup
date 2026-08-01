@@ -152,7 +152,7 @@
  * 理论值 ≈ 1/g × 180/π ≈ 5.8。实际需要实测微调。
  * 调参用 Pi 发 0x09。
  */
-#define FF_ACCEL_GAIN             7.5f
+#define FF_ACCEL_GAIN             10.0f
 
 /**
  * FF 加速度死区 (m/s²)：低于此值的加速度视为匀速/静止。

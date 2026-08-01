@@ -288,6 +288,7 @@ UI_Init();
 					                        TASK2_SPEED_ARC,
 					                        TASK2_DIFF_GAIN);
 					Tracking_SetStopOnCurve(false);
+					Tracking_SetLapStop(true);        /* 一圈停车：2次弯道→直道 */
 					Tracking_SetSpeedRamp(false);     /* 任务2无需渐加/减速 */
 					break;
 
@@ -295,7 +296,8 @@ UI_Init();
 					Tracking_SetSpeedParams(TASK4_SPEED_STRAIGHT,
 					                        TASK4_SPEED_ARC,
 					                        TASK4_DIFF_GAIN);
-					Tracking_SetStopOnCurve(true);    /* 首次转弯停车 */
+					Tracking_SetStopOnCurve(true);    /* B点停车：进入首个弯道 */
+					Tracking_SetLapStop(false);
 					Balance_SetTarget(0.0f);
 					Tracking_SetSpeedRamp(true);
 					break;
@@ -304,7 +306,8 @@ UI_Init();
 					Tracking_SetSpeedParams(TASK5_SPEED_STRAIGHT,
 					                        TASK5_SPEED_ARC,
 					                        TASK5_DIFF_GAIN);
-					Tracking_SetStopOnCurve(false);   /* 停车线停止 */
+					Tracking_SetStopOnCurve(false);
+					Tracking_SetLapStop(true);        /* 一圈停车：2次弯道→直道 */
 					Tracking_SetSpeedRamp(true);
 					Balance_SetTarget(0.0f);          /* 目标=中心 */
 					break;
@@ -314,7 +317,8 @@ UI_Init();
 					                        TASK6_SPEED_ARC,
 					                        TASK6_DIFF_GAIN);
 					Tracking_SetSpeedRamp(true);
-					Tracking_SetStopOnCurve(false);   /* 停车线停止 */
+					Tracking_SetStopOnCurve(false);
+					Tracking_SetLapStop(true);        /* 一圈停车：2次弯道→直道 */
 					s_task6_capture = true;           /* 等 Pi 帧捕获球位置 */
 					break;
 
@@ -420,7 +424,10 @@ UI_Init();
 			{
 				uint8_t mask = Grayscale_ReadAll();
 				Tracking_Update(Board_GetTickMs(), mask);
-				Balance_ChassisFF_Update(Board_GetTickMs() - s_rc_last_ms < PI_TIMEOUT_MS);
+
+				/* 弯道差速时编码器速度差分的前馈失真 → 取消前馈；直道正常补偿 */
+				bool pi_ok = (Board_GetTickMs() - s_rc_last_ms < PI_TIMEOUT_MS);
+				Balance_ChassisFF_Update(pi_ok && !Tracking_IsCurve());
 			}
 			break;
 

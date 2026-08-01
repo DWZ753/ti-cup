@@ -27,8 +27,19 @@ static float    s_current_speed;     // 当前斜坡速度 (mm/s)
 static uint32_t s_last_ramp_ms;      // 上次斜坡计算时间
 static bool     s_speed_ramp = true; // 渐加速/渐减速开关（默认开）
 
-/* AB段：首次转弯自动停车 */
-static bool  s_stop_on_curve  = false;
+/* 停车使能 */
+static bool  s_stop_on_curve  = false;   /* 任务4：进入首个弯道即停（B点） */
+static bool  s_lap_stop       = false;   /* 任务2/5/6：2次弯道→直道即停（回A点） */
+
+/* 弯道状态机（防抖） */
+static bool     s_in_curve      = false;  /* 防抖后的弯道状态 */
+static uint32_t s_curve_enter_ms = 0;    /* 进入弯道持续计时起点 */
+static uint32_t s_curve_exit_ms  = 0;    /* 离开弯道持续计时起点 */
+static uint32_t s_start_run_ms   = 0;    /* 本次循迹启动时刻 */
+
+/* 一圈停车计数 */
+static uint8_t s_lap_cs_count   = 0;    /* 已检测到的"弯道→直道"次数 */
+static bool    s_lap_prev_curve = false; /* 上一帧防抖弯道状态（边沿检测） */
 
 /* ========== 位置解算 ========== */
 
@@ -99,6 +110,12 @@ void Tracking_Init(void)
 	s_last_tracking       = 0;
 	s_current_speed       = 0.0f;
 	s_last_ramp_ms        = 0;
+	s_in_curve            = false;
+	s_curve_enter_ms      = 0;
+	s_curve_exit_ms       = 0;
+	s_start_run_ms        = 0;
+	s_lap_cs_count        = 0;
+	s_lap_prev_curve      = false;
 }
 
 /**
@@ -112,6 +129,12 @@ void Tracking_Start(void)
 	s_last_tracking       = Board_GetTickMs();
 	s_current_speed       = 0.0f;
 	s_last_ramp_ms        = Board_GetTickMs();
+	s_in_curve            = false;
+	s_curve_enter_ms      = 0;
+	s_curve_exit_ms       = 0;
+	s_start_run_ms        = Board_GetTickMs();
+	s_lap_cs_count        = 0;
+	s_lap_prev_curve      = false;
 	s_running             = true;
 }
 
@@ -123,6 +146,11 @@ void Tracking_Stop(void)
 	Motor_Brake();
 	Servo_SetValue(0);
 	s_tracking_last_servo = 0;
+	s_in_curve            = false;
+	s_curve_enter_ms      = 0;
+	s_curve_exit_ms       = 0;
+	s_lap_cs_count        = 0;
+	s_lap_prev_curve      = false;
 	PID_Reset(&s_tracking_pid);
 	s_running = false;
 }
@@ -134,6 +162,18 @@ void Tracking_Stop(void)
 bool Tracking_IsRunning(void)
 {
 	return s_running;
+}
+
+/**
+ * @brief 查询是否处于弯道（差速转弯中）
+ * @return true=弯道（|舵机输出|>SERVO_CURVE_THRESHOLD），false=直道
+ * @note  用于行驶中平衡：弯道差速时编码器平均速度求导失真，
+ *        底盘前馈应取消，直道保持前馈补偿。
+ */
+bool Tracking_IsCurve(void)
+{
+	return (s_tracking_last_servo > SERVO_CURVE_THRESHOLD)
+	    || (s_tracking_last_servo < -SERVO_CURVE_THRESHOLD);
 }
 
 /**
@@ -150,12 +190,21 @@ void Tracking_SetSpeedParams(float straight, float arc, float diff_gain)
 }
 
 /**
- * @brief AB段模式：首次转弯自动停车
- * @param enable true=检测到首次转弯时自动 Tracking_Stop()
+ * @brief 任务4 B点停车使能
+ * @param enable true=进入首个弯道（防抖确认）时自动 Tracking_Stop()
  */
 void Tracking_SetStopOnCurve(bool enable)
 {
 	s_stop_on_curve = enable;
+}
+
+/**
+ * @brief 任务2/5/6 一圈停车使能
+ * @param enable true=检测到第2次"弯道→直道"时自动 Tracking_Stop()（回到A点）
+ */
+void Tracking_SetLapStop(bool enable)
+{
+	s_lap_stop = enable;
 }
 
 /**
@@ -227,11 +276,76 @@ void Tracking_Update(uint32_t now_ms, uint8_t mask)
 		float right_speed = s_current_speed - diff;
 		Motor_SetSpeedLR(left_speed, right_speed);
 
-		/* AB段：首次转弯 → 自动停车 */
-		if (s_stop_on_curve && abs_servo > SERVO_CURVE_THRESHOLD)
+		/* ======== 弯道状态机（任务4 B点 / 任务2·5·6 一圈 停车共用） ======== */
+		/*
+		 * 防抖弯道状态：|舵机|>阈值 持续 CURVE_PERSIST_MS 判为进入弯道，
+		 * 回正 持续 CURVE_EXIT_MS 判为离开弯道；启动后 CURVE_ARM_MS 内不判定，
+		 * 跳过起步纠偏瞬态。
+		 *
+		 * 停车触发：
+		 *   任务4（s_stop_on_curve）→ 进入弯道边沿，停在 B 点；
+		 *   任务2/5/6（s_lap_stop）→ "弯道→直道"边沿计数，第 2 次回到 A 点即停。
+		 * 一圈轨迹为 直→弯→直→弯→直，两次"弯→直"正好对应 C 点和 A 点。
+		 */
 		{
-			Tracking_Stop();
-			return;
+			bool curve_now = (abs_servo > SERVO_CURVE_THRESHOLD);
+
+			if (now_ms - s_start_run_ms < CURVE_ARM_MS)
+			{
+				/* 启动瞬态窗口内：不累计弯道/直道计时 */
+				s_curve_enter_ms = 0;
+				s_curve_exit_ms  = 0;
+			}
+			else if (curve_now)
+			{
+				s_curve_exit_ms = 0;
+				if (!s_in_curve)
+				{
+					if (s_curve_enter_ms == 0)
+						s_curve_enter_ms = now_ms;
+					else if (now_ms - s_curve_enter_ms >= CURVE_PERSIST_MS)
+						s_in_curve = true;
+				}
+			}
+			else
+			{
+				s_curve_enter_ms = 0;
+				if (s_in_curve)
+				{
+					if (s_curve_exit_ms == 0)
+						s_curve_exit_ms = now_ms;
+					else if (now_ms - s_curve_exit_ms >= CURVE_EXIT_MS)
+						s_in_curve = false;
+				}
+			}
+
+			/* 防抖弯道状态边沿 → 停车判定 */
+			if (s_in_curve != s_lap_prev_curve)
+			{
+				s_lap_prev_curve = s_in_curve;
+
+				if (s_in_curve)
+				{
+					/* 进入弯道 → 任务4 停在 B 点 */
+					if (s_stop_on_curve)
+					{
+						Tracking_Stop();
+						return;
+					}
+				}
+				else
+				{
+					/* 弯道→直道 → 任务2/5/6 计次，第 2 次回到 A 点停 */
+					if (s_lap_stop)
+					{
+						if (++s_lap_cs_count >= 2)
+						{
+							Tracking_Stop();
+							return;
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -272,25 +386,4 @@ void Tracking_Update(uint32_t now_ms, uint8_t mask)
 		}
 	}
 
-	/* ======== 停车横线检测 ======== */
-	/*
-	 * A 点停车：所有传感器同时压黑线((mask & 0xFC) == 0x00)。
-	 * 在弧线段连续检测 STOP_LINE_DEBOUNCE 次确认停车。
-	 *
-	 * TODO: 启用前先确认赛道确实有横线，且传感器极性正确。
-	 */
-	static uint8_t stop_debounce = 0;
-
-	if ((mask & 0xFC) == 0x00)
-	{
-		if (++stop_debounce >= STOP_LINE_DEBOUNCE)
-		{
-			Tracking_Stop();
-			stop_debounce = 0;
-		}
-	}
-	else
-	{
-		stop_debounce = 0;
-	}
 }
