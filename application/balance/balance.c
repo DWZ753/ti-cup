@@ -38,6 +38,7 @@ static float    s_cmd_angle;                    // 最后发送的角度指令 (
 static float    s_i_accum;                      // I 项积分器
 static float    s_ff_accel;                     // 待叠加 FF 倾角 (°)
 static uint8_t  s_confidence;                   // 最近一次置信度
+static float    s_last_pos_error;                // 上次位置误差（过零检测用）
 
 /* 时间戳 */
 static uint32_t s_last_update_ms;
@@ -414,6 +415,21 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	else if (angle_p < -s_p_limit)
 		angle_p = -s_p_limit;
 
+	/*
+	 * KP 增益调度：远处激进拉回，近处温和防过冲。
+	 * 与刹车渐进（D 调度）互补——P 管拉力，D 管刹车。
+	 */
+	{
+		float kp_scale;
+		if (abs_err > 30.0f)
+			kp_scale = KP_FAR_SCALE;        /* 远：激进 */
+		else if (abs_err > 10.0f)
+			kp_scale = 1.0f;                /* 中：正常 */
+		else
+			kp_scale = KP_NEAR_SCALE;       /* 近：温和 */
+		angle_p *= kp_scale;
+	}
+
 	/* 4b. D 项（速度阻尼）+ 死区衰减 + 刹车渐进 */
 	angle_d = s_kd * s_ball_vel;
 
@@ -459,13 +475,33 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	else if (angle_d < -s_d_limit)
 		angle_d = -s_d_limit;
 
-	/* 4c. I 项 + anti-windup */
+	/* 4c. I 项：过零复位 + anti-windup + 卡住冻结 */
 	{
 		float pd_sum;
 
+		/*
+		 * 过零复位：误差穿过零点 → 球越过了目标。
+		 * 清空 I 项防止摩擦导致的振荡中 I 项来回积累。
+		 */
+		if ((pos_error > 0.0f) != (s_last_pos_error > 0.0f))
+		{
+			s_i_accum = 0.0f;
+		}
+		s_last_pos_error = pos_error;
+
+		/*
+		 * 卡住检测：球静止但偏离目标 → 静摩擦卡住。
+		 * 冻结 I 项积累，防止冲破静摩擦瞬间 I 项已过大导致过冲。
+		 * 偏置角度在 4d 中叠加。
+		 */
+		bool stuck = (s_ball_vel > -STICTION_VEL_MMS
+		           && s_ball_vel < STICTION_VEL_MMS
+		           && abs_err > STICTION_ERR_MM);
+
 		pd_sum = angle_p - angle_d;
 
-		if (dt_s > 0.001f
+		if (!stuck
+		    && dt_s > 0.001f
 		    && pd_sum > -s_max_angle
 		    && pd_sum < s_max_angle)
 		{
@@ -478,6 +514,17 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 			s_i_accum = -s_i_limit;
 
 		angle_cmd = pd_sum + s_i_accum;
+
+		/*
+		 * Coulomb 摩擦补偿：卡住时叠加固定偏置角度
+		 * 破坏静摩擦，方向 = 误差方向。
+		 */
+		if (stuck)
+		{
+			float bump = (pos_error > 0.0f)
+			             ? STICTION_ANGLE_DEG : -STICTION_ANGLE_DEG;
+			angle_cmd += bump;
+		}
 	}
 
 	/* 4d. 叠加底盘前馈 + 控制方向 */
@@ -582,17 +629,54 @@ void Balance_SeqUpdate(void)
 	/* ---- 闭环模式：Pi 反馈驱动 ---- */
 	target = s_seq_table[s_seq_step].target_mm;
 
-	/* 球到达目标？用原始位置避免滤波滞后 */
-	if (!s_seq_reached)
+	/*
+	 * 球到达目标判定：用原始位置避免滤波滞后。
+	 *
+	 * 球可能高速冲过目标后停在阈值窗口之外（PD 稳住了但位置偏了），
+	 * 仅靠 |误差| < THRESHOLD 会漏判。改为三条件：进入窗口 OR 越过目标
+	 * OR 曾经进入过窗口（最近距离记忆）。
+	 */
 	{
-		err = s_ball_pos_raw - target;
-		if (err < 0.0f) err = -err;
-		if (err < BALANCE_SEQ_THRESHOLD_MM)
+		static float s_best_err = 999.0f;   /* 本步内最接近目标的距离 */
+		static float s_last_raw = 0.0f;     /* 上一帧的原始位置（越界检测用） */
+
+		if (!s_seq_reached)
 		{
-			s_seq_reached = true;
-			s_seq_tick    = now_ms;
+			float current_err = s_ball_pos_raw - target;
+			if (current_err < 0.0f) current_err = -current_err;
+
+			/* 记忆最近距离 */
+			if (current_err < s_best_err)
+				s_best_err = current_err;
+
+			/*
+			 * 三个判定条件（满足任一即算到达）：
+			 * 1. 当前在阈值内
+			 * 2. 曾经在阈值内（最近距离 ≤ 阈值）
+			 * 3. 越过了目标（上一帧和目标的关系 ≠ 这一帧）
+			 */
+			bool crossed = ((s_last_raw - target) > 0.0f)
+			            != ((s_ball_pos_raw - target) > 0.0f);
+			bool in_window = (current_err <= BALANCE_SEQ_THRESHOLD_MM);
+			bool ever_close = (s_best_err <= BALANCE_SEQ_THRESHOLD_MM);
+
+			if (in_window || ever_close || crossed)
+			{
+				s_seq_reached = true;
+				s_seq_tick    = now_ms;
+				s_best_err    = 999.0f;  /* 重置，下一步用 */
+			}
+
+			s_last_raw = s_ball_pos_raw;
 		}
-		return;
+		else
+		{
+			s_best_err = 999.0f;  /* 已到达，重置等待下一步 */
+			s_last_raw = s_ball_pos_raw;
+		}
+
+		if (!s_seq_reached)
+			return;
 	}
 
 	/* 到达后停留计时 → 推进下一步 */
@@ -603,7 +687,6 @@ void Balance_SeqUpdate(void)
 
 		if (s_seq_step >= S_SEQ_LEN)
 		{
-			s_target_pos  = 0.0f;
 			s_i_accum     = 0.0f;
 			s_seq_running = false;
 			s_seq_done    = true;

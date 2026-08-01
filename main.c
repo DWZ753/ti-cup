@@ -31,8 +31,9 @@
 #define CMD_PID_ACK      0x27  /**< MCU → Pi PID确认: 同上 */
 #define CMD_TASK_START   0x33  /**< MCU → Pi 任务开始: task_id(uint8) */
 #define CMD_TASK_STOP    0x34  /**< MCU → Pi 任务结束: time_ms(uint16,BE) */
-#define CMD_STOP         0x32  /**< 立即停止: 无载荷 */
+#define CMD_SET_TARGET   0x28  /**< Pi → MCU 设球目标: target_mm(int16,BE) */
 #define CMD_RESUME_LINE  0x2F  /**< 回到循迹: 无载荷 */
+#define CMD_STOP         0x32  /**< 立即停止: 无载荷 */
 
 #define REMOTE_MAX_SPEED_MM_S  2136.0f   /**< speed=100 时的线速度 */
 #define REMOTE_WATCHDOG_MS     500       /**< 无指令超时自动停车 */
@@ -152,6 +153,15 @@ static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 				ack_buf[4] = u.b[3];
 			}
 			Protocol_SendFrame(CMD_PID_ACK, ack_buf, 5);
+		}
+		break;
+
+	case CMD_SET_TARGET:
+		if (len >= 2)
+		{
+			int16_t tgt = (int16_t)(((uint16_t)payload[0] << 8)
+			                      | payload[1]);
+			Balance_SetTarget((float)tgt);
 		}
 		break;
 

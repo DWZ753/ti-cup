@@ -116,6 +116,18 @@
 #define BRAKE_FULL_ERROR_MM       8.0f    /**< 此距离以下 D×1.0 */
 #define BRAKE_FAR_SCALE           0.2f    /**< 远处 D 衰减系数 */
 
+/* ========== Coulomb 摩擦补偿（Stiction Bump） ========== */
+
+/*
+ * 球在目标附近可能因静摩擦卡住不动，PD 输出不足以克服。
+ * 检测卡住状态后叠加脉冲偏置破坏静摩擦，同时冻结 I 项防过冲。
+ */
+#define STICTION_VEL_MMS          5.0f    /**< mm/s，低于此速度视为卡住 */
+#define STICTION_ERR_MM           3.0f    /**< mm，大于此误差才触发补偿 */
+#define STICTION_ANGLE_DEG        1.0f    /**< °，破坏静摩擦的偏置角度 */
+#define KP_FAR_SCALE              1.5f    /**< |误差|>30mm 时 KP 倍率 */
+#define KP_NEAR_SCALE             0.6f    /**< |误差|<10mm 时 KP 倍率 */
+
 /* ========== 滤波 ========== */
 
 /**
