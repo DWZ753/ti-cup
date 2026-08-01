@@ -67,7 +67,14 @@
 
 /* ========== 速度估计 ========== */
 
-#define VEL_FILTER_ALPHA          0.2f
+#define VEL_BUF_SIZE              4     // 多帧差分帧数
+
+/* ========== D 项制动渐进 ========== */
+
+/* 球滚向目标时 D 按距离衰减，防止过早制动 */
+#define BRAKE_START_ERROR_MM      40.0f  // 此距离以上 D×BRAKE_FAR_SCALE
+#define BRAKE_FULL_ERROR_MM       8.0f   // 此距离以下 D×1.0（全制动）
+#define BRAKE_FAR_SCALE           0.2f   // 远处 D 衰减系数
 
 /* ========== 目标死区 ========== */
 

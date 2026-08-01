@@ -20,6 +20,7 @@
 #include "balance_config.h"
 #include "chassis_config.h"
 #include "protocol.h"
+#include "protocol_commands.h"
 #include "motor.h"
 #include "zdt_motor.h"
 
@@ -83,6 +84,8 @@ static uint32_t s_rc_last_ms;     // 最近收到 Pi 指令的时间戳
 	/* ========== Pi 球位置调试 ========== */
 	static int16_t  s_debug_ball_pos;  // Pi 发来的球位置 (mm)
 	static uint8_t  s_debug_ball_conf; // Pi 发来的置信度 0/1/2
+	static uint32_t s_rx_frame_cnt;    // 解析成功的总帧数（调试）
+	static uint32_t s_ball_frame_cnt;  // 收到的 0x25 球位置帧数（调试）
 	static bool     s_task6_capture;    // 任务6：等待捕获首个球位置
 
 /* ========== 底盘前馈 ========== */
@@ -120,6 +123,7 @@ static void Format_Time(uint32_t ms)
 static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 {
 	s_rc_last_ms = Board_GetTickMs();
+	s_rx_frame_cnt++;
 
 	switch (cmd)
 	{
@@ -170,6 +174,7 @@ static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 			Balance_Update((float)pos_mm, 0.0f, conf);
 			s_debug_ball_pos = pos_mm;
 			s_debug_ball_conf = conf;
+			s_ball_frame_cnt++;
 		}
 		break;
 
@@ -249,12 +254,11 @@ static void Running_Show_First(void)
 	/* 16px 大字居中: 7 字符 x 8px = 56px, (128-56)/2 = 36 */
 	OLED_ShowString(36, 2, s_time_buf, 16);
 
-	/* FF 调试 + PID 分量 */
-	OLED_ShowString(0, 4, (uint8_t*)"a:", 8);
-	OLED_ShowString(64, 4, (uint8_t*)"F:", 8);
-	OLED_ShowString(0, 5, (uint8_t*)"P:", 8);
-	OLED_ShowString(64, 5, (uint8_t*)"D:", 8);
-	OLED_ShowString(0, 6, (uint8_t*)"I:", 8);
+	/* PID 分量 */
+	OLED_ShowString(0, 4, (uint8_t*)"P:", 8);
+	OLED_ShowString(64, 4, (uint8_t*)"D:", 8);
+	OLED_ShowString(0, 5, (uint8_t*)"I:", 8);
+	OLED_ShowString(0, 6, (uint8_t*)"V:", 8);
 }
 
 /**
@@ -265,45 +269,40 @@ static void Running_Show_Time(uint32_t elapsed_ms)
 	Format_Time(elapsed_ms);
 	OLED_ShowString(36, 2, s_time_buf, 16);
 
-	/* FF + PID 分量 */
+	/* PID 分量 */
 	{
 		int32_t val;
 		uint8_t sign;
 
-		/* 加速度 (cm/s²) */
-		val  = (int32_t)(s_ff_accel * 100.0f);
+		/* P 项 (0.1°) line 4 */
+		val  = (int32_t)(Balance_GetP() * 10.0f);
 		sign = (val >= 0) ? '+' : '-';
 		if (val < 0) val = -val;
 		OLED_ShowChar(16, 4, sign, 8);
 		OLED_ShowNum(24, 4, (uint32_t)val, 3, 8);
 
-		/* FF 倾角 (0.1°) */
-		val  = (int32_t)(s_ff_angle * 10.0f);
-		sign = (val >= 0) ? '+' : '-';
-		if (val < 0) val = -val;
-		OLED_ShowChar(76, 4, sign, 8);
-		OLED_ShowNum(84, 4, (uint32_t)val, 3, 8);
-
-		/* P 项 (0.1°) */
-		val  = (int32_t)(Balance_GetP() * 10.0f);
-		sign = (val >= 0) ? '+' : '-';
-		if (val < 0) val = -val;
-		OLED_ShowChar(16, 5, sign, 8);
-		OLED_ShowNum(24, 5, (uint32_t)val, 3, 8);
-
-		/* D 项 (0.1°) */
+		/* D 项 (0.1°) line 4 */
 		val  = (int32_t)(Balance_GetD() * 10.0f);
 		sign = (val >= 0) ? '+' : '-';
 		if (val < 0) val = -val;
-		OLED_ShowChar(80, 5, sign, 8);
-		OLED_ShowNum(88, 5, (uint32_t)val, 3, 8);
+		OLED_ShowChar(80, 4, sign, 8);
+		OLED_ShowNum(88, 4, (uint32_t)val, 3, 8);
 
-		/* I 项 (0.01°) */
+		/* I 项 (0.01°) line 5 */
 		val  = (int32_t)(Balance_GetIAccum() * 100.0f);
 		sign = (val >= 0) ? '+' : '-';
 		if (val < 0) val = -val;
-		OLED_ShowChar(16, 6, sign, 8);
-		OLED_ShowNum(24, 6, (uint32_t)val, 4, 8);
+		OLED_ShowChar(16, 5, sign, 8);
+		OLED_ShowNum(24, 5, (uint32_t)val, 4, 8);
+
+		/* 球速 (mm/s) line 6 */
+		{
+			int32_t vel = (int32_t)Balance_GetVel();
+			sign = (vel >= 0) ? '+' : '-';
+			if (vel < 0) vel = -vel;
+			OLED_ShowChar(16, 6, sign, 8);
+			OLED_ShowNum(24, 6, (uint32_t)vel, 4, 8);
+		}
 	}
 		/* 目标位置 */
 		{
@@ -315,6 +314,15 @@ static void Running_Show_Time(uint32_t elapsed_ms)
 			OLED_ShowChar(32, 1, sign, 8);
 			OLED_ShowNum(40, 1, (uint32_t)tgt, 4, 8);
 			OLED_ShowString(72, 1, (uint8_t*)"mm", 8);
+
+			/* 置信度: 0=丢球 1=低 2=正常 */
+			OLED_ShowChar(88, 1, (uint8_t)('0' + s_debug_ball_conf), 8);
+		}
+
+		/* 接收帧计数（调试）: Rx = 解析成功的总帧数 */
+		{
+			OLED_ShowString(48, 7, (uint8_t*)"Rx:", 8);
+			OLED_ShowNum(66, 7, s_rx_frame_cnt % 10000u, 4, 8);
 		}
 
 			/* Pi 球位置调试 */
@@ -448,52 +456,6 @@ static void ChassisFF_Update(void)
 	{
 		Balance_ChassisFF(accel_filtered);
 		s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
-		return;
-	}
-
-	/* ---- 开环：直接 Pos_Control（无 Pi 时） ---- */
-
-	/* 速度接近 0 → 强制回平衡位 */
-	if (speed_now > -20.0f && speed_now < 20.0f && accel_raw > -0.5f && accel_raw < 0.5f)
-	{
-		accel_filtered = 0.0f;
-		s_ff_accel = 0.0f;
-		s_ff_angle = 0.0f;
-		ff_angle = BALANCE_HOME_OFFSET_DEG;  /* 电机坐标水平位 */
-		goto ff_apply;
-	}
-
-	/* 死区 → 回平衡位 */
-	if (accel_filtered > -FF_ACCEL_DEADZONE && accel_filtered < FF_ACCEL_DEADZONE)
-	{
-		s_ff_angle = 0.0f;
-		ff_angle = BALANCE_HOME_OFFSET_DEG;  /* 电机坐标水平位 */
-		goto ff_apply;
-	}
-
-	/* 惯性补偿：平衡位 + FF 偏移 */
-	s_ff_angle = accel_filtered * FF_ACCEL_GAIN;
-	ff_angle = BALANCE_HOME_OFFSET_DEG + s_ff_angle;  /* 水平位+FF偏移 */
-	/* 钳位：水平位 ± MAX_ANGLE */
-	if (ff_angle > BALANCE_HOME_OFFSET_DEG + BALANCE_MAX_ANGLE_DEG)
-		ff_angle = BALANCE_HOME_OFFSET_DEG + BALANCE_MAX_ANGLE_DEG;
-	else if (ff_angle < BALANCE_HOME_OFFSET_DEG - BALANCE_MAX_ANGLE_DEG)
-		ff_angle = BALANCE_HOME_OFFSET_DEG - BALANCE_MAX_ANGLE_DEG;
-
-
-ff_apply:
-	/* 绝对位置控制：直接定位到目标角度，不依赖相对运动累积 */
-	{
-		int32_t target_pulses = (int32_t)(ff_angle * BALANCE_PULSE_PER_DEG);
-		uint8_t dir;
-		uint32_t clk;
-
-		if (target_pulses >= 0) { dir = 0; clk = (uint32_t)target_pulses; }
-		else                     { dir = 1; clk = (uint32_t)(-target_pulses); }
-
-		ZDT_Motor_Pos_Control(BALANCE_MOTOR_ID, dir,
-		                      BALANCE_WORK_VEL, 5,
-		                      clk, 1, false);
 	}
 }
 
@@ -514,6 +476,12 @@ int main(void)
 	s_rc_diff     = 0;
 	s_rc_beam     = 0;
 	s_rc_last_ms  = Board_GetTickMs();
+
+	/* 通知 Pi 开机，开始视觉跟踪（0xFF = 未选任务） */
+	{
+		uint8_t boot = 0xFF;
+		Protocol_SendFrame(CMD_TASK_START, &boot, 1);
+	}
 
 	/* 显示初始菜单 */
 	s_oled_dirty = true;
@@ -606,6 +574,11 @@ int main(void)
 				s_last_ff_ms         = 0;
 			}
 
+				/* 通知 Pi 任务开始 */
+				{
+					uint8_t task_id = (uint8_t)s_selected_task;
+					Protocol_SendFrame(CMD_TASK_START, &task_id, 1);
+				}
 				s_state      = STATE_RUNNING;
 				s_oled_dirty = true;
 			}
@@ -653,7 +626,7 @@ int main(void)
 					{
 						uint8_t msg[] = { (uint8_t)(s_last_time_ms >> 8),
 						                  (uint8_t)(s_last_time_ms & 0xFF) };
-						Protocol_SendFrame(0x2E, msg, 2);
+						Protocol_SendFrame(CMD_TASK_STOP, msg, 2);
 					}
 
 					s_state        = STATE_READY;

@@ -20,8 +20,13 @@
 
 /* 位置与速度 */
 static float    s_ball_pos;                     // 低通后球位置 (mm)
-static float    s_last_ball_pos;                // 上次球位置（差分用）
-static float    s_ball_vel;                     // 滤波后球速度 (mm/s)
+static float    s_ball_vel;                     // 多帧差分速度 (mm/s)
+
+/* 原始位置环形缓冲（多帧差分速度解算） */
+static float    s_pos_raw[VEL_BUF_SIZE];        // 原始 Pi 位置
+static uint32_t s_t_raw[VEL_BUF_SIZE];          // 时间戳
+static uint8_t  s_buf_idx;                      // 写入位置
+static uint8_t  s_buf_cnt;                      // 已填充帧数
 
 /* 控制输出 */
 static float    s_target_pos;                   // 目标位置 (mm)
@@ -157,6 +162,8 @@ void Balance_Init(void)
 	s_target_pos     = 0.0f;
 	s_ball_pos       = 0.0f;
 	s_ball_vel       = 0.0f;
+	s_buf_idx        = 0;
+	s_buf_cnt        = 0;
 	s_ff_accel       = 0.0f;
 	s_confidence     = 0;
 	s_last_update_ms = 0;
@@ -192,6 +199,11 @@ float Balance_GetD(void)
 	return BALANCE_KD * s_ball_vel;
 }
 
+float Balance_GetVel(void)
+{
+	return s_ball_vel;
+}
+
 /* ========== PID 控制更新（Pi @50Hz 调用） ========== */
 
 void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
@@ -216,19 +228,20 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	s_ball_pos = s_ball_pos * (1.0f - POS_FILTER_ALPHA)
 	           + ball_pos_mm    * POS_FILTER_ALPHA;
 
-	/* ---- 2. 球速低通滤波（位置差分） ---- */
-	if (s_last_update_ms > 0)
+	/* ---- 2. 原始位置入环 + 首尾帧差分速度 ---- */
+	s_pos_raw[s_buf_idx] = ball_pos_mm;
+	s_t_raw[s_buf_idx]   = now_ms;
+	s_buf_idx = (s_buf_idx + 1) % VEL_BUF_SIZE;
+	if (s_buf_cnt < VEL_BUF_SIZE)
+		s_buf_cnt++;
+
+	if (s_buf_cnt >= VEL_BUF_SIZE)
 	{
-		float raw_vel;
-		float dt_s = (float)(now_ms - s_last_update_ms) * 0.001f;
-		if (dt_s > 0.001f && dt_s < 0.5f)
-		{
-			raw_vel = (s_ball_pos - s_last_ball_pos) / dt_s;
-			s_ball_vel = s_ball_vel * (1.0f - VEL_FILTER_ALPHA)
-			           + raw_vel    * VEL_FILTER_ALPHA;
-		}
+		uint8_t oldest = s_buf_idx;  /* 最新写入后 idx 指向最旧 */
+		float   dt_s   = (float)(now_ms - s_t_raw[oldest]) * 0.001f;
+		if (dt_s > 0.001f)
+			s_ball_vel = (ball_pos_mm - s_pos_raw[oldest]) / dt_s;
 	}
-	s_last_ball_pos = s_ball_pos;
 
 	/* ---- 3. dt 计算（I 项用） ---- */
 	dt_s = 0.0f;
@@ -256,10 +269,38 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	else if (angle_p < -BALANCE_P_LIMIT_DEG)
 		angle_p = -BALANCE_P_LIMIT_DEG;
 
-	/* 4b. D 项（速度阻尼）+ 死区衰减 */
+	/* 4b. D 项（速度阻尼） */
 	angle_d = BALANCE_KD * s_ball_vel;
 
-	/* 死区：|error| < DEADBAND 时 D 按比例衰减 */
+	/* 制动渐进：球滚向目标时衰减 D，防止过早制动抵消 P */
+	{
+		bool toward = (pos_error > 0.0f && s_ball_vel < 0.0f)
+		           || (pos_error < 0.0f && s_ball_vel > 0.0f);
+		float d_scale;
+
+		if (!toward)
+		{
+			d_scale = 1.0f;                    /* 远离目标 → 全 D */
+		}
+		else if (abs_err > BRAKE_START_ERROR_MM)
+		{
+			d_scale = BRAKE_FAR_SCALE;         /* 远 → 弱 D，让球自由滚 */
+		}
+		else if (abs_err > BRAKE_FULL_ERROR_MM)
+		{
+			d_scale = BRAKE_FAR_SCALE
+			        + (1.0f - BRAKE_FAR_SCALE)
+			          * (BRAKE_START_ERROR_MM - abs_err)
+			          / (BRAKE_START_ERROR_MM - BRAKE_FULL_ERROR_MM);
+		}
+		else
+		{
+			d_scale = 1.0f;                    /* 近 → 全 D，精确制动 */
+		}
+		angle_d *= d_scale;
+	}
+
+	/* 死区：|error| < DEADBAND 时 D 再额外衰减 */
 	if (abs_err < BALANCE_DEADBAND_MM)
 		angle_d *= (abs_err / BALANCE_DEADBAND_MM);
 

@@ -56,6 +56,7 @@ float Balance_GetIAccum(void);
  */
 float Balance_GetP(void);
 float Balance_GetD(void);
+float Balance_GetVel(void);
 
 /**
  * @brief 球位置更新入口（Pi @50Hz 调用）

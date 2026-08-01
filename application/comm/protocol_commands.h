@@ -36,6 +36,8 @@
 #define CMD_RESUME_LINE   0x2F  /**< 回到灰度循迹模式（无载荷） */
 
 /* ---- MSPM0 小车 → 树莓派 ---- */
+#define CMD_TASK_START    0x31  /**< 任务开始: task_id(uint8) */
+#define CMD_TASK_STOP     0x32  /**< 任务停止: time_ms(uint16, 大端) */
 #define CMD_GIMBAL_OK     0x30  /**< 云台已到位（无载荷） */
 #define CMD_FAULT         0x3F  /**< 故障: error_code(uint8_t) */
 
