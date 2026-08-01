@@ -19,6 +19,28 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* ========== PID 在线调参 ========== */
+
+typedef enum {
+	BALANCE_PARAM_KP = 0,       /**< °/mm */
+	BALANCE_PARAM_KI,           /**< °/(mm·s) */
+	BALANCE_PARAM_KD,           /**< °/(mm/s) */
+	BALANCE_PARAM_P_LIMIT,      /**< °, P 项限幅 */
+	BALANCE_PARAM_I_LIMIT,      /**< °, I 项限幅 */
+	BALANCE_PARAM_D_LIMIT,      /**< °, D 项限幅 */
+	BALANCE_PARAM_DEADBAND,     /**< mm, D 项死区 */
+	BALANCE_PARAM_POS_ALPHA,    /**< 位置低通系数 */
+	BALANCE_PARAM_VEL_ALPHA,    /**< 速度低通系数 */
+	BALANCE_PARAM_FF_GAIN,      /**< °/(m/s²), FF 增益 */
+	BALANCE_PARAM_FF_DEADZONE,  /**< m/s², FF 死区 */
+	BALANCE_PARAM_FF_FILTER,    /**< FF 低通系数 */
+	BALANCE_PARAM_MAX_ANGLE,    /**< °, 输出总限幅 */
+	BALANCE_PARAM_RESET,        /**< 清零积分（value 忽略） */
+} Balance_ParamID;
+
+void Balance_SetParam(Balance_ParamID id, float value);
+float Balance_GetParam(Balance_ParamID id);
+
 /* ========== API ========== */
 
 /**

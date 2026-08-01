@@ -33,6 +33,22 @@ static uint8_t  s_confidence;                   // 最近一次置信度
 /* 时间戳 */
 static uint32_t s_last_update_ms;
 
+/* ========== 可调参数（运行时副本，Pi 可在线修改） ========== */
+
+static float s_kp          = BALANCE_KP;
+static float s_ki          = BALANCE_KI;
+static float s_kd          = BALANCE_KD;
+static float s_p_limit     = BALANCE_P_LIMIT_DEG;
+static float s_i_limit     = BALANCE_I_LIMIT_DEG;
+static float s_d_limit     = BALANCE_D_LIMIT_DEG;
+static float s_deadband    = BALANCE_DEADBAND_MM;
+static float s_pos_alpha   = POS_FILTER_ALPHA;
+static float s_vel_alpha   = VEL_FILTER_ALPHA;
+static float s_ff_gain     = FF_ACCEL_GAIN;
+static float s_ff_deadzone = FF_ACCEL_DEADZONE;
+static float s_ff_filter   = FF_ACCEL_FILTER;
+static float s_max_angle   = BALANCE_MAX_ANGLE_DEG;
+
 /* ========== 内部控制 ========== */
 
 /**
@@ -184,12 +200,56 @@ float Balance_GetIAccum(void)
 float Balance_GetP(void)
 {
 	float error = s_target_pos - s_ball_pos;
-	return BALANCE_KP * error;
+	return s_kp * error;
 }
 
 float Balance_GetD(void)
 {
-	return BALANCE_KD * s_ball_vel;
+	return s_kd * s_ball_vel;
+}
+
+/* ========== 在线调参 ========== */
+
+void Balance_SetParam(Balance_ParamID id, float value)
+{
+	switch (id)
+	{
+	case BALANCE_PARAM_KP:          s_kp          = value; break;
+	case BALANCE_PARAM_KI:          s_ki          = value; break;
+	case BALANCE_PARAM_KD:          s_kd          = value; break;
+	case BALANCE_PARAM_P_LIMIT:     s_p_limit     = value; break;
+	case BALANCE_PARAM_I_LIMIT:     s_i_limit     = value; break;
+	case BALANCE_PARAM_D_LIMIT:     s_d_limit     = value; break;
+	case BALANCE_PARAM_DEADBAND:    s_deadband    = value; break;
+	case BALANCE_PARAM_POS_ALPHA:   s_pos_alpha   = value; break;
+	case BALANCE_PARAM_VEL_ALPHA:   s_vel_alpha   = value; break;
+	case BALANCE_PARAM_FF_GAIN:     s_ff_gain     = value; break;
+	case BALANCE_PARAM_FF_DEADZONE: s_ff_deadzone = value; break;
+	case BALANCE_PARAM_FF_FILTER:   s_ff_filter   = value; break;
+	case BALANCE_PARAM_MAX_ANGLE:   s_max_angle   = value; break;
+	case BALANCE_PARAM_RESET:       s_i_accum     = 0.0f;  break;
+	}
+}
+
+float Balance_GetParam(Balance_ParamID id)
+{
+	switch (id)
+	{
+	case BALANCE_PARAM_KP:          return s_kp;
+	case BALANCE_PARAM_KI:          return s_ki;
+	case BALANCE_PARAM_KD:          return s_kd;
+	case BALANCE_PARAM_P_LIMIT:     return s_p_limit;
+	case BALANCE_PARAM_I_LIMIT:     return s_i_limit;
+	case BALANCE_PARAM_D_LIMIT:     return s_d_limit;
+	case BALANCE_PARAM_DEADBAND:    return s_deadband;
+	case BALANCE_PARAM_POS_ALPHA:   return s_pos_alpha;
+	case BALANCE_PARAM_VEL_ALPHA:   return s_vel_alpha;
+	case BALANCE_PARAM_FF_GAIN:     return s_ff_gain;
+	case BALANCE_PARAM_FF_DEADZONE: return s_ff_deadzone;
+	case BALANCE_PARAM_FF_FILTER:   return s_ff_filter;
+	case BALANCE_PARAM_MAX_ANGLE:   return s_max_angle;
+	default:                        return 0.0f;
+	}
 }
 
 /* ========== PID 控制更新（Pi @50Hz 调用） ========== */
@@ -213,8 +273,8 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 	now_ms = Board_GetTickMs();
 
 	/* ---- 1. 位置低通滤波 ---- */
-	s_ball_pos = s_ball_pos * (1.0f - POS_FILTER_ALPHA)
-	           + ball_pos_mm    * POS_FILTER_ALPHA;
+	s_ball_pos = s_ball_pos * (1.0f - s_pos_alpha)
+	           + ball_pos_mm    * s_pos_alpha;
 
 	/* ---- 2. 球速低通滤波（位置差分） ---- */
 	if (s_last_update_ms > 0)
@@ -224,8 +284,8 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 		if (dt_s > 0.001f && dt_s < 0.5f)
 		{
 			raw_vel = (s_ball_pos - s_last_ball_pos) / dt_s;
-			s_ball_vel = s_ball_vel * (1.0f - VEL_FILTER_ALPHA)
-			           + raw_vel    * VEL_FILTER_ALPHA;
+			s_ball_vel = s_ball_vel * (1.0f - s_vel_alpha)
+			           + raw_vel    * s_vel_alpha;
 		}
 	}
 	s_last_ball_pos = s_ball_pos;
@@ -250,23 +310,23 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 		pos_error *= 0.5f;
 
 	/* 4a. P 项 + 限幅 */
-	angle_p = BALANCE_KP * pos_error;
-	if (angle_p > BALANCE_P_LIMIT_DEG)
-		angle_p = BALANCE_P_LIMIT_DEG;
-	else if (angle_p < -BALANCE_P_LIMIT_DEG)
-		angle_p = -BALANCE_P_LIMIT_DEG;
+	angle_p = s_kp * pos_error;
+	if (angle_p > s_p_limit)
+		angle_p = s_p_limit;
+	else if (angle_p < -s_p_limit)
+		angle_p = -s_p_limit;
 
 	/* 4b. D 项（速度阻尼）+ 死区衰减 */
-	angle_d = BALANCE_KD * s_ball_vel;
+	angle_d = s_kd * s_ball_vel;
 
 	/* 死区：|error| < DEADBAND 时 D 按比例衰减 */
-	if (abs_err < BALANCE_DEADBAND_MM)
-		angle_d *= (abs_err / BALANCE_DEADBAND_MM);
+	if (abs_err < s_deadband)
+		angle_d *= (abs_err / s_deadband);
 
-	if (angle_d > BALANCE_D_LIMIT_DEG)
-		angle_d = BALANCE_D_LIMIT_DEG;
-	else if (angle_d < -BALANCE_D_LIMIT_DEG)
-		angle_d = -BALANCE_D_LIMIT_DEG;
+	if (angle_d > s_d_limit)
+		angle_d = s_d_limit;
+	else if (angle_d < -s_d_limit)
+		angle_d = -s_d_limit;
 
 	/* 4c. I 项 + anti-windup */
 	{
@@ -275,16 +335,16 @@ void Balance_Update(float ball_pos_mm, float ball_vel_mm_s, uint8_t confidence)
 		pd_sum = angle_p - angle_d;
 
 		if (dt_s > 0.001f
-		    && pd_sum > -BALANCE_MAX_ANGLE_DEG
-		    && pd_sum < BALANCE_MAX_ANGLE_DEG)
+		    && pd_sum > -s_max_angle
+		    && pd_sum < s_max_angle)
 		{
-			s_i_accum += BALANCE_KI * pos_error * dt_s;
+			s_i_accum += s_ki * pos_error * dt_s;
 		}
 
-		if (s_i_accum > BALANCE_I_LIMIT_DEG)
-			s_i_accum = BALANCE_I_LIMIT_DEG;
-		else if (s_i_accum < -BALANCE_I_LIMIT_DEG)
-			s_i_accum = -BALANCE_I_LIMIT_DEG;
+		if (s_i_accum > s_i_limit)
+			s_i_accum = s_i_limit;
+		else if (s_i_accum < -s_i_limit)
+			s_i_accum = -s_i_limit;
 
 		angle_cmd = pd_sum + s_i_accum;
 	}
@@ -306,7 +366,7 @@ void Balance_ChassisFF(float accel_m_s2)
 	 * 底盘加速 → 球受惯性后滚 → 需摆杆前倾补偿
 	 * θ_ff ≈ a/g × 180/π ≈ 5.8 °/(m/s²)
 	 */
-	s_ff_accel += FF_ACCEL_GAIN * accel_m_s2;
+	s_ff_accel += s_ff_gain * accel_m_s2;
 }
 
 /* ========== 状态查询 ========== */

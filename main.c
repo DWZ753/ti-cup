@@ -28,6 +28,8 @@
 #define CMD_MOTOR       0x30  /**< 电机差速: speed(int8), diff(int8) [-100,100] */
 #define CMD_BEAM        0x31  /**< 摆杆倾角: angle(int8) [-10,10] 度 */
 #define CMD_BALL_POS     0x25  /**< Pi → MCU 球位置: pos_mm(int16,BE) + confidence(uint8) */
+#define CMD_SET_PID      0x26  /**< Pi → MCU 设置PID: param_id(1B) + value(f32 LE,4B) */
+#define CMD_PID_ACK      0x27  /**< MCU → Pi PID确认: 同上 */
 #define CMD_STOP         0x32  /**< 立即停止: 无载荷 */
 #define CMD_RESUME_LINE  0x2F  /**< 回到循迹: 无载荷 */
 
@@ -170,6 +172,40 @@ static void OnPiFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
 			Balance_Update((float)pos_mm, 0.0f, conf);
 			s_debug_ball_pos = pos_mm;
 			s_debug_ball_conf = conf;
+		}
+		break;
+
+	case CMD_SET_PID:
+		if (len >= 5)
+		{
+			uint8_t param_id = payload[0];
+			float   value;
+			uint8_t ack_buf[5];
+
+			/* 小端 float32 解码 */
+			{
+				union { float f; uint8_t b[4]; } u;
+				u.b[0] = payload[1];
+				u.b[1] = payload[2];
+				u.b[2] = payload[3];
+				u.b[3] = payload[4];
+				value = u.f;
+			}
+
+			Balance_SetParam((Balance_ParamID)param_id, value);
+
+			/* 回传 ACK */
+			ack_buf[0] = param_id;
+			value = Balance_GetParam((Balance_ParamID)param_id);
+			{
+				union { float f; uint8_t b[4]; } u;
+				u.f = value;
+				ack_buf[1] = u.b[0];
+				ack_buf[2] = u.b[1];
+				ack_buf[3] = u.b[2];
+				ack_buf[4] = u.b[3];
+			}
+			Protocol_SendFrame(CMD_PID_ACK, ack_buf, 5);
 		}
 		break;
 
@@ -415,6 +451,7 @@ static void ChassisFF_Update(void)
 
 	float speed_now = (Motor_GetFilteredSpeed1() + Motor_GetFilteredSpeed2()) * 0.5f;
 	float accel_raw = 0.0f;
+	float ff_angle;
 
 	if (s_last_ff_ms > 0)
 	{
